@@ -45,7 +45,7 @@ tdm_error    sprd_layer_set_property(tdm_layer *layer, unsigned int id, tdm_valu
 tdm_error    sprd_layer_get_property(tdm_layer *layer, unsigned int id, tdm_value *value);
 tdm_error    sprd_layer_set_info(tdm_layer *layer, tdm_info_layer *info);
 tdm_error    sprd_layer_get_info(tdm_layer *layer, tdm_info_layer *info);
-tdm_error    sprd_layer_set_buffer(tdm_layer *layer, tbm_surface_h buffer);
+tdm_error    sprd_layer_set_buffer(tdm_layer *layer, tdm_buffer *buffer);
 tdm_error    sprd_layer_unset_buffer(tdm_layer *layer);
 void         sprd_pp_destroy(tdm_pp *pp);
 tdm_error    sprd_pp_set_info(tdm_pp *pp, tdm_info_pp *info);

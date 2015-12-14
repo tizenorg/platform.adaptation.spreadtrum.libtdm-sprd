@@ -1,9 +1,13 @@
 Name:           libtdm-sprd
 Version:        1.0.0
 Release:        0
+License:        MIT
 Summary:        Tizen Display Manager Spreadtrum Back-End Library
 Group:          Development/Libraries
-License:        MIT
+ExcludeArch:    i586 x86_64
+%if ("%{?tizen_target_name}" != "TM1")
+ExclusiveArch:
+%endif
 Source0:        %{name}-%{version}.tar.gz
 Source1001:     %{name}.manifest
 BuildRequires: pkgconfig(libdrm)

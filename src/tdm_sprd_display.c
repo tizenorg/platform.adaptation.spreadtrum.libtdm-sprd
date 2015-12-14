@@ -432,7 +432,7 @@ _tdm_sprd_display_cb_vblank(int fd, unsigned int sequence,
         return;
     }
 }
-
+#if 0
 static void
 _tdm_sprd_display_cb_pp(int fd, unsigned int prop_id, unsigned int *buf_idx,
                           unsigned int tv_sec, unsigned int tv_usec,
@@ -440,7 +440,8 @@ _tdm_sprd_display_cb_pp(int fd, unsigned int prop_id, unsigned int *buf_idx,
 {
     tdm_sprd_pp_handler(prop_id, buf_idx, tv_sec, tv_usec, user_data);
 }
-
+#endif
+#if 0
 static int
 _tdm_sprd_display_events_handle(int fd, Drm_Event_Context *evctx)
 {
@@ -519,7 +520,7 @@ _tdm_sprd_display_events_handle(int fd, Drm_Event_Context *evctx)
 
     return 0;
 }
-
+#endif
 static tdm_error
 _tdm_sprd_display_create_layer_list_type(tdm_sprd_data *sprd_data)
 {
@@ -1210,16 +1211,15 @@ tdm_error
 sprd_display_handle_events(tdm_backend_data *bdata)
 {
     tdm_sprd_data *sprd_data = bdata;
-    Drm_Event_Context ctx;
-
+//    Drm_Event_Context ctx;
+    drmEventContext evctx;
     RETURN_VAL_IF_FAIL(sprd_data, TDM_ERROR_INVALID_PARAMETER);
+    memset(&evctx, 0, sizeof(drmEventContext));
 
-    memset(&ctx, 0, sizeof(Drm_Event_Context));
-
-    ctx.vblank_handler = _tdm_sprd_display_cb_vblank;
-    ctx.pp_handler = _tdm_sprd_display_cb_pp;
-
-    _tdm_sprd_display_events_handle(sprd_data->drm_fd, &ctx);
+    evctx.vblank_handler = _tdm_sprd_display_cb_vblank;
+  //  ctx.pp_handler = _tdm_sprd_display_cb_pp;
+    drmHandleEvent(sprd_data->drm_fd, &evctx);
+    //_tdm_sprd_display_events_handle(sprd_data->drm_fd, &ctx);
 
     return TDM_ERROR_NONE;
 }

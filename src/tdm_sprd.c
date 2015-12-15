@@ -41,6 +41,7 @@ static tdm_func_display sprd_func_display =
     sprd_layer_get_info,
     sprd_layer_set_buffer,
     sprd_layer_unset_buffer,
+    NULL,    //layer_set_video_pos
     NULL,    //layer_create_capture
 };
 

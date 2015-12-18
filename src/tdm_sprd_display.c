@@ -8,17 +8,35 @@
 
 #define MIN_WIDTH   32
 #define LAYER_COUNT_PER_OUTPUT   2
-
+#ifdef HAVE_FB_VBLANK
+/** @TODO fb event struct */
+#else
+typedef struct drm_event hw_event_t;
+#endif
 
 typedef struct _tdm_sprd_output_data tdm_sprd_output_data;
 typedef struct _tdm_sprd_layer_data tdm_sprd_layer_data;
-typedef struct _tdm_sprd_vblank_data tdm_sprd_vblank_data;
+typedef struct _tdm_sprd_vblank_data_s tdm_sprd_vblank_data;
 
 typedef enum
 {
     VBLANK_TYPE_WAIT,
     VBLANK_TYPE_COMMIT,
-} vblank_type;
+} vblank_type_t;
+
+typedef struct
+{
+    struct list_head link;
+    uint32_t hw_event_type;
+    void (*hw_event_func)(int fd, tdm_sprd_data *sprd_data_p, void* hw_event_data);
+} hw_event_callback_t;
+
+struct _tdm_sprd_vblank_data_s
+{
+    vblank_type_t type;
+    tdm_sprd_output_data *output_data;
+    void *user_data;
+};
 
 typedef struct _tdm_sprd_display_buffer
 {
@@ -28,13 +46,6 @@ typedef struct _tdm_sprd_display_buffer
     tdm_buffer *buffer;
     int width;
 } tdm_sprd_display_buffer;
-
-struct _tdm_sprd_vblank_data
-{
-    vblank_type type;
-    tdm_sprd_output_data *output_data;
-    void *user_data;
-};
 
 struct _tdm_sprd_output_data
 {
@@ -55,10 +66,8 @@ struct _tdm_sprd_output_data
     struct list_head layer_list;
     tdm_sprd_layer_data *primary_layer;
 
-    /* not fixed data below */
     tdm_output_vblank_handler vblank_func;
     tdm_output_commit_handler commit_func;
-
     tdm_output_conn_status status;
 
     int mode_changed;
@@ -209,6 +218,43 @@ _tdm_sprd_display_to_tdm_mode(drmModeModeInfoPtr drm_mode, tdm_output_mode *tdm_
     snprintf(tdm_mode->name, TDM_NAME_LEN, "%s", drm_mode->name);
 }
 
+static int
+_localdrmWaitVBlank(int fd, drmVBlank *vbl)
+{
+    struct timespec timeout, cur;
+    int ret;
+
+    ret = clock_gettime(CLOCK_MONOTONIC, &timeout);
+    if (ret < 0)
+    {
+    	TDM_ERR("clock_gettime failed: %s", strerror(errno));
+	goto out;
+    }
+    timeout.tv_sec++;
+
+    do
+    {
+       ret = ioctl(fd, DRM_IOCTL_WAIT_VBLANK, vbl);
+       vbl->request.type &= ~DRM_VBLANK_RELATIVE;
+       if (ret && errno == EINTR)
+       {
+	       clock_gettime(CLOCK_MONOTONIC, &cur);
+	       /* Timeout after 1s */
+	       if (cur.tv_sec > timeout.tv_sec + 1 ||
+		   (cur.tv_sec == timeout.tv_sec && cur.tv_nsec >=
+		    timeout.tv_nsec))
+           {
+		       errno = EBUSY;
+		       ret = -1;
+		       break;
+	       }
+       }
+    } while (ret && errno == EINTR);
+
+out:
+    return ret;
+}
+
 static tdm_error
 _tdm_sprd_display_get_cur_msc (int fd, int pipe, uint *msc)
 {
@@ -219,7 +265,7 @@ _tdm_sprd_display_get_cur_msc (int fd, int pipe, uint *msc)
         vbl.request.type |= DRM_VBLANK_SECONDARY;
 
     vbl.request.sequence = 0;
-    if (drmWaitVBlank(fd, &vbl))
+    if (_localdrmWaitVBlank(fd, &vbl))
     {
         TDM_ERR("get vblank counter failed: %m");
         *msc = 0;
@@ -243,7 +289,7 @@ _tdm_sprd_display_wait_vblank(int fd, int pipe, uint *target_msc, void *data)
     vbl.request.sequence = *target_msc;
     vbl.request.signal = (unsigned long)(uintptr_t)data;
 
-    if (drmWaitVBlank(fd, &vbl))
+    if (_localdrmWaitVBlank(fd, &vbl))
     {
         *target_msc = 0;
         TDM_ERR("wait vblank failed: %m");
@@ -307,11 +353,18 @@ _tdm_sprd_display_commit_primary_layer(tdm_sprd_layer_data *layer_data)
         }
         else
         {
+#if 0
             if (drmModePageFlip(sprd_data->drm_fd, output_data->crtc_id,
                                 layer_data->display_buffer->fb_id, DRM_MODE_PAGE_FLIP_EVENT, layer_data->display_buffer))
             {
                 TDM_ERR("pageflip failed: %m");
                 return TDM_ERROR_OPERATION_FAILED;
+            }
+#endif
+            drmModeModeInfoPtr mode;
+            mode = _tdm_sprd_display_get_mode(output_data);
+            if (drmModeSetCrtc(sprd_data->drm_fd, output_data->crtc_id, layer_data->display_buffer->fb_id, 0 ,0,
+                               &output_data->connector_id, 1, mode)) {
             }
         }
     }
@@ -402,36 +455,6 @@ _tdm_sprd_display_commit_layer(tdm_sprd_layer_data *layer_data)
     return TDM_ERROR_NONE;
 }
 
-static void
-_tdm_sprd_display_cb_vblank(int fd, unsigned int sequence,
-                              unsigned int tv_sec, unsigned int tv_usec,
-                              void *user_data)
-{
-    tdm_sprd_vblank_data *vblank_data = user_data;
-    tdm_sprd_output_data *output_data;
-
-    if (!vblank_data)
-    {
-        TDM_ERR("no vblank data");
-        return;
-    }
-
-    output_data = vblank_data->output_data;
-
-    switch(vblank_data->type)
-    {
-    case VBLANK_TYPE_WAIT:
-        if (output_data->vblank_func)
-            output_data->vblank_func(output_data, sequence, tv_sec, tv_usec, vblank_data->user_data);
-        break;
-    case VBLANK_TYPE_COMMIT:
-        if (output_data->commit_func)
-            output_data->commit_func(output_data, sequence, tv_sec, tv_usec, vblank_data->user_data);
-        break;
-    default:
-        return;
-    }
-}
 #if 0
 static void
 _tdm_sprd_display_cb_pp(int fd, unsigned int prop_id, unsigned int *buf_idx,
@@ -1211,15 +1234,46 @@ tdm_error
 sprd_display_handle_events(tdm_backend_data *bdata)
 {
     tdm_sprd_data *sprd_data = bdata;
-//    Drm_Event_Context ctx;
-    drmEventContext evctx;
     RETURN_VAL_IF_FAIL(sprd_data, TDM_ERROR_INVALID_PARAMETER);
-    memset(&evctx, 0, sizeof(drmEventContext));
+    #define MAX_BUF_SIZE    1024
 
-    evctx.vblank_handler = _tdm_sprd_display_cb_vblank;
-  //  ctx.pp_handler = _tdm_sprd_display_cb_pp;
-    drmHandleEvent(sprd_data->drm_fd, &evctx);
-    //_tdm_sprd_display_events_handle(sprd_data->drm_fd, &ctx);
+    char buffer[MAX_BUF_SIZE];
+    unsigned int len, i;
+    hw_event_t *kernel_event_p;
+    hw_event_callback_t *event_list_cur = NULL, *event_list_next = NULL;
+    /* The DRM read semantics guarantees that we always get only
+     * complete events. */
+    len = read(sprd_data->drm_fd, buffer, sizeof buffer);
+    if (len == 0)
+    {
+        TDM_WRN("warning: the size of the drm_event is 0.");
+        return TDM_ERROR_NONE;
+    }
+    if (len < sizeof *kernel_event_p)
+    {
+        TDM_WRN("warning: the size of the drm_event is less than drm_event structure.");
+        return TDM_ERROR_OPERATION_FAILED;
+    }
+    if (len > MAX_BUF_SIZE)
+    {
+        TDM_WRN("warning: the size of the drm_event can be over the maximum size.");
+        return TDM_ERROR_OPERATION_FAILED;
+    }
+    i = 0;
+    while (i < len)
+    {
+        kernel_event_p = (hw_event_t *) &buffer[i];
+        LIST_FOR_EACH_ENTRY_SAFE(event_list_cur, event_list_next, &sprd_data->events_list, link)
+        {
+            if (event_list_cur->hw_event_type == kernel_event_p->type)
+            {
+                if (event_list_cur->hw_event_func)
+                    event_list_cur->hw_event_func(sprd_data->drm_fd, sprd_data, &buffer[i]);
+                break;
+            }
+        }
+        i += kernel_event_p->length;
+    }
 
     return TDM_ERROR_NONE;
 }
@@ -1475,10 +1529,8 @@ tdm_error
 sprd_output_set_vblank_handler(tdm_output *output, tdm_output_vblank_handler func)
 {
     tdm_sprd_output_data *output_data = output;
-
     RETURN_VAL_IF_FAIL(output_data, TDM_ERROR_INVALID_PARAMETER);
     RETURN_VAL_IF_FAIL(func, TDM_ERROR_INVALID_PARAMETER);
-
     output_data->vblank_func = func;
 
     return TDM_ERROR_NONE;
@@ -1901,4 +1953,96 @@ sprd_layer_unset_buffer(tdm_layer *layer)
     layer_data->display_buffer_changed = 1;
 
     return TDM_ERROR_NONE;
+}
+
+static void
+_sprd_drm_vblank_event (int fd, tdm_sprd_data *sprd_data_p, void* hw_event_data)
+{
+    RETURN_VAL_IF_FAIL(hw_event_data,);
+    RETURN_VAL_IF_FAIL(sprd_data_p,);
+    struct drm_event_vblank *hw_vblank = (struct drm_event_vblank *) hw_event_data;
+    tdm_sprd_vblank_data *vblank_data = (tdm_sprd_vblank_data* )((unsigned long) hw_vblank->user_data);
+    tdm_sprd_output_data *output_data;
+
+    if (!vblank_data)
+    {
+        TDM_ERR("no vblank data");
+        return;
+    }
+
+    output_data = vblank_data->output_data;
+    if (!output_data)
+    {
+        TDM_ERR("no output data");
+        return;
+    }
+    switch(vblank_data->type)
+    {
+    case VBLANK_TYPE_WAIT:
+        if (output_data->vblank_func)
+            output_data->vblank_func(output_data, hw_vblank->sequence,
+                                     hw_vblank->tv_sec, hw_vblank->tv_usec,
+                                     vblank_data->user_data);
+        break;
+    case VBLANK_TYPE_COMMIT:
+        if (output_data->commit_func)
+            output_data->commit_func(output_data, hw_vblank->sequence,
+                                     hw_vblank->tv_sec, hw_vblank->tv_usec,
+                                     vblank_data->user_data);
+        break;
+    default:
+        return;
+    }
+}
+static void
+_sprd_drm_flip_complete_event (int fd, tdm_sprd_data *sprd_data_p, void* hw_event_data)
+{
+    TDM_DBG("FLIP EVENT");
+}
+
+tdm_error
+tdm_sprd_display_create_event_list(tdm_sprd_data *sprd_data)
+{
+    RETURN_VAL_IF_FAIL(sprd_data, TDM_ERROR_INVALID_PARAMETER);
+    tdm_error ret_err = TDM_ERROR_NONE;
+    hw_event_callback_t *vblank_event_p = NULL;
+//    hw_event_callback_t *ipp_event_p = NULL;
+    hw_event_callback_t *flip_complete_event_p = NULL;
+#ifdef HAVE_FB_VBLANK
+/** @TODO FB vblank */
+#else
+    if ((vblank_event_p = malloc(sizeof(hw_event_callback_t))) == NULL)
+    {
+        TDM_ERR("alloc fail");
+        ret_err = TDM_ERROR_OUT_OF_MEMORY;
+        goto bad_l;
+    }
+    vblank_event_p->hw_event_type = DRM_EVENT_VBLANK;
+    vblank_event_p->hw_event_func = _sprd_drm_vblank_event;
+    LIST_ADD(&vblank_event_p->link, &sprd_data->events_list);
+    if ((flip_complete_event_p = malloc(sizeof(hw_event_callback_t))) == NULL)
+    {
+        TDM_ERR("alloc fail");
+        ret_err = TDM_ERROR_OUT_OF_MEMORY;
+        goto bad_l;
+    }
+    flip_complete_event_p->hw_event_type = DRM_EVENT_FLIP_COMPLETE;
+    flip_complete_event_p->hw_event_func = _sprd_drm_flip_complete_event;
+    LIST_ADD(&flip_complete_event_p->link, &sprd_data->events_list);
+#endif
+#ifdef HAVE_IPP_DRM_EVENT
+/** @TODO SPRD IPP */
+#endif
+    if (ret_err != TDM_ERROR_NONE)
+        goto bad_l;
+    return TDM_ERROR_NONE;
+bad_l:
+    tdm_sprd_display_destroy_event_list(sprd_data);
+    return ret_err;
+}
+
+void
+tdm_sprd_display_destroy_event_list(tdm_sprd_data *sprd_data)
+{
+    RETURN_VAL_IF_FAIL(sprd_data,);
 }

@@ -5,9 +5,6 @@ License:        MIT
 Summary:        Tizen Display Manager Spreadtrum Back-End Library
 Group:          Development/Libraries
 ExcludeArch:    i586 x86_64
-%if ("%{?tizen_target_name}" != "TM1")
-ExclusiveArch:
-%endif
 Source0:        %{name}-%{version}.tar.gz
 Source1001:     %{name}.manifest
 BuildRequires: pkgconfig(libdrm)
@@ -19,6 +16,11 @@ BuildRequires: pkgconfig(libtdm)
 Back-End library of Tizen Display Manager Spreadtrum : libtdm-mgr SPRD library
 
 %prep
+%if "%{?tizen_target_name}" != "TM1"
+%{error: target %{?tizen_target_name} is not supported!}
+exit 1
+%endif
+
 %setup -q
 cp %{SOURCE1001} .
 

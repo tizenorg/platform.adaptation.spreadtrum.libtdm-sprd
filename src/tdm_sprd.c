@@ -165,7 +165,7 @@ tdm_sprd_deinit(tdm_backend_data *bdata)
     drmRemoveUserHandler(tdm_helper_drm_fd, _tdm_sprd_drm_user_handler);
 #endif
     tdm_sprd_display_destroy_output_list(sprd_data);
-
+    tdm_sprd_display_destroy_event_list(sprd_data);
     if (sprd_data->plane_res)
         drmModeFreePlaneResources(sprd_data->plane_res);
     if (sprd_data->mode_res)
@@ -212,6 +212,7 @@ tdm_sprd_init(tdm_display *dpy, tdm_error *error)
 
     LIST_INITHEAD(&sprd_data->output_list);
     LIST_INITHEAD(&sprd_data->buffer_list);
+    LIST_INITHEAD(&sprd_data->events_list);
 
     ret = tdm_backend_register_func_display(dpy, &sprd_func_display);
     if (ret != TDM_ERROR_NONE)
@@ -296,7 +297,9 @@ tdm_sprd_init(tdm_display *dpy, tdm_error *error)
     ret = tdm_sprd_display_create_layer_list(sprd_data);
     if (ret != TDM_ERROR_NONE)
         goto failed_l;
-
+    ret = tdm_sprd_display_create_event_list(sprd_data);
+    if (ret != TDM_ERROR_NONE)
+        goto failed_l;
     if (error)
         *error = TDM_ERROR_NONE;
 

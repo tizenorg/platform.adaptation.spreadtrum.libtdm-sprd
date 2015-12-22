@@ -25,7 +25,7 @@ typedef struct _tdm_sprd_display_buffer
     struct list_head link;
 
     unsigned int fb_id;
-    tdm_buffer *buffer;
+    tbm_surface_h buffer;
     int width;
 } tdm_sprd_display_buffer;
 
@@ -185,7 +185,7 @@ _tdm_sprd_display_get_mode(tdm_sprd_output_data *output_data)
 }
 
 static tdm_sprd_display_buffer*
-_tdm_sprd_display_find_buffer(tdm_sprd_data *sprd_data, tdm_buffer *buffer)
+_tdm_sprd_display_find_buffer(tdm_sprd_data *sprd_data, tbm_surface_h buffer)
 {
     tdm_sprd_display_buffer *display_buffer;
 
@@ -799,7 +799,7 @@ _tdm_sprd_display_create_layer_list_not_fixed(tdm_sprd_data *sprd_data)
 }
 
 static void
-_tdm_sprd_display_cb_destroy_buffer(tdm_buffer *buffer, void *user_data)
+_tdm_sprd_display_cb_destroy_buffer(tbm_surface_h buffer, void *user_data)
 {
     tdm_sprd_data *sprd_data;
     tdm_sprd_display_buffer *display_buffer;
@@ -1813,20 +1813,18 @@ sprd_layer_get_info(tdm_layer *layer, tdm_info_layer *info)
 }
 
 tdm_error
-sprd_layer_set_buffer(tdm_layer *layer, tdm_buffer *buffer)
+sprd_layer_set_buffer(tdm_layer *layer, tbm_surface_h buffer)
 {
     tdm_sprd_layer_data *layer_data = layer;
     tdm_sprd_data *sprd_data;
     tdm_sprd_display_buffer *display_buffer;
     tdm_error err = TDM_ERROR_NONE;
-    tbm_surface_h surface;
     int ret, i, count;
 
     RETURN_VAL_IF_FAIL(layer_data, TDM_ERROR_INVALID_PARAMETER);
     RETURN_VAL_IF_FAIL(buffer, TDM_ERROR_INVALID_PARAMETER);
 
     sprd_data = layer_data->sprd_data;
-    surface = tdm_buffer_get_surface(buffer);
     display_buffer = _tdm_sprd_display_find_buffer(sprd_data, buffer);
     if (!display_buffer)
     {
@@ -1857,18 +1855,18 @@ sprd_layer_set_buffer(tdm_layer *layer, tdm_buffer *buffer)
         unsigned int offsets[4] = {0,};
         unsigned int size;
 
-        width = tbm_surface_get_width(surface);
-        height = tbm_surface_get_height(surface);
-        format = tbm_surface_get_format(surface);
-        count = tbm_surface_internal_get_num_bos(surface);
+        width = tbm_surface_get_width(buffer);
+        height = tbm_surface_get_height(buffer);
+        format = tbm_surface_get_format(buffer);
+        count = tbm_surface_internal_get_num_bos(buffer);
         for (i = 0; i < count; i++)
         {
-            tbm_bo bo = tbm_surface_internal_get_bo(surface, i);
+            tbm_bo bo = tbm_surface_internal_get_bo(buffer, i);
             handles[i] = tbm_bo_get_handle(bo, TBM_DEVICE_DEFAULT).u32;
         }
         count = tbm_surface_internal_get_num_planes(format);
         for (i = 0; i < count; i++)
-            tbm_surface_internal_get_plane_data(surface, i, &size, &offsets[i], &pitches[i]);
+            tbm_surface_internal_get_plane_data(buffer, i, &size, &offsets[i], &pitches[i]);
 
         ret = drmModeAddFB2(sprd_data->drm_fd, width, height, format,
                             handles, pitches, offsets, &display_buffer->fb_id, 0);

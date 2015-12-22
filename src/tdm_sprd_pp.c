@@ -3,7 +3,7 @@
 #endif
 
 #include "tdm_sprd.h"
-
+#include "sprd_pp_7727.h"
 typedef struct _tdm_sprd_pp_buffer
 {
     int index;
@@ -34,23 +34,24 @@ typedef struct _tdm_sprd_pp_data
     struct list_head link;
 } tdm_sprd_pp_data;
 
-#if 0
+#if 1
 static tbm_format pp_formats[] =
 {
-    TBM_FORMAT_ARGB8888,
     TBM_FORMAT_XRGB8888,
+    TBM_FORMAT_RGB565,
     TBM_FORMAT_YUYV,
     TBM_FORMAT_UYVY,
     TBM_FORMAT_NV12,
     TBM_FORMAT_NV21,
     TBM_FORMAT_YUV420,
-    TBM_FORMAT_YVU420
+    TBM_FORMAT_YVU420,
+    TBM_FORMAT_YUV444,
 };
 #else
 static tbm_format *pp_formats = NULL;
 #endif
 
-#if 0
+#if 1
 #define NUM_PP_FORMAT   (sizeof(pp_formats) / sizeof(pp_formats[0]))
 #else
 #define NUM_PP_FORMAT 0
@@ -62,7 +63,7 @@ static struct list_head pp_list;
 static int
 _get_index(tdm_sprd_pp_data *pp_data)
 {
-    tdm_sprd_pp_buffer *buffer;
+    tdm_sprd_pp_buffer *buffer = NULL;
     int ret = 0;
 
     while (1)
@@ -92,7 +93,7 @@ _get_index(tdm_sprd_pp_data *pp_data)
 
     return ret;
 }
-#if 0
+#if 1
 static tdm_error
 _tdm_sprd_pp_set(tdm_sprd_pp_data *pp_data)
 {
@@ -102,13 +103,13 @@ _tdm_sprd_pp_set(tdm_sprd_pp_data *pp_data)
     int ret = 0;
 
     CLEAR(property);
-    property.config[0].ops_id = EXYNOS_DRM_OPS_SRC;
+    property.config[0].ops_id = SPRD_DRM_OPS_SRC;
     property.config[0].fmt = tdm_sprd_format_to_drm_format(info->src_config.format);
     memcpy(&property.config[0].sz, &info->src_config.size, sizeof(tdm_size));
     memcpy(&property.config[0].pos, &info->src_config.pos, sizeof(tdm_pos));
-    property.config[1].ops_id = EXYNOS_DRM_OPS_DST;
+    property.config[1].ops_id = SPRD_DRM_OPS_DST;
     property.config[1].degree = info->transform / 4;
-    property.config[1].flip = (info->transform > 3) ? EXYNOS_DRM_FLIP_HORIZONTAL : 0;
+    property.config[1].flip = (info->transform > 3) ? SPRD_DRM_FLIP_HORIZONTAL : 0;
     property.config[1].fmt = tdm_sprd_format_to_drm_format(info->dst_config.format);
     memcpy(&property.config[1].sz, &info->dst_config.size, sizeof(tdm_size));
     memcpy(&property.config[1].pos, &info->dst_config.pos, sizeof(tdm_pos));
@@ -124,7 +125,7 @@ _tdm_sprd_pp_set(tdm_sprd_pp_data *pp_data)
             property.config[1].sz.hsize, property.config[1].sz.vsize,
             property.config[1].pos.x, property.config[1].pos.y, property.config[1].pos.w, property.config[1].pos.h);
 
-    ret = ioctl(sprd_data->drm_fd, DRM_IOCTL_EXYNOS_IPP_SET_PROPERTY, &property);
+    ret = ioctl(sprd_data->drm_fd, DRM_IOCTL_SPRD_IPP_SET_PROPERTY, &property);
     if (ret)
     {
         TDM_ERR("failed: %m");
@@ -136,7 +137,7 @@ _tdm_sprd_pp_set(tdm_sprd_pp_data *pp_data)
     return TDM_ERROR_NONE;
 }
 #endif
-#if 0
+#if 1
 static tdm_error
 _tdm_sprd_pp_queue(tdm_sprd_pp_data *pp_data, tdm_sprd_pp_buffer *buffer, enum drm_sprd_ipp_buf_type type)
 {
@@ -146,12 +147,12 @@ _tdm_sprd_pp_queue(tdm_sprd_pp_data *pp_data, tdm_sprd_pp_buffer *buffer, enum d
 
     CLEAR(buf);
     buf.prop_id = pp_data->prop_id;
-    buf.ops_id = EXYNOS_DRM_OPS_SRC;
+    buf.ops_id = SPRD_DRM_OPS_SRC;
     buf.buf_type = type;
     buf.buf_id = buffer->index;
     buf.user_data = (__u64)(uintptr_t)pp_data;
     bo_num = tbm_surface_internal_get_num_bos(buffer->src);
-    for (i = 0; i < EXYNOS_DRM_PLANAR_MAX && i < bo_num; i++)
+    for (i = 0; i < SPRD_DRM_PLANAR_MAX && i < bo_num; i++)
     {
         tbm_bo bo = tbm_surface_internal_get_bo(buffer->src, i);
         buf.handle[i] = (__u32)tbm_bo_get_handle(bo, TBM_DEVICE_DEFAULT).u32;
@@ -161,7 +162,7 @@ _tdm_sprd_pp_queue(tdm_sprd_pp_data *pp_data, tdm_sprd_pp_buffer *buffer, enum d
             buf.prop_id, buf.ops_id, buf.buf_type, buf.buf_id,
             buf.handle[0], buf.handle[1], buf.handle[2]);
 
-    ret = ioctl(sprd_data->drm_fd, DRM_IOCTL_EXYNOS_IPP_QUEUE_BUF, &buf);
+    ret = ioctl(sprd_data->drm_fd, DRM_IOCTL_SPRD_IPP_QUEUE_BUF, &buf);
     if (ret)
     {
         TDM_ERR("src failed. prop_id(%d) op(%d) buf(%d) id(%d). %m",
@@ -171,12 +172,12 @@ _tdm_sprd_pp_queue(tdm_sprd_pp_data *pp_data, tdm_sprd_pp_buffer *buffer, enum d
 
     CLEAR(buf);
     buf.prop_id = pp_data->prop_id;
-    buf.ops_id = EXYNOS_DRM_OPS_DST;
+    buf.ops_id = SPRD_DRM_OPS_DST;
     buf.buf_type = type;
     buf.buf_id = buffer->index;
     buf.user_data = (__u64)(uintptr_t)pp_data;
     bo_num = tbm_surface_internal_get_num_bos(buffer->dst);
-    for (i = 0; i < EXYNOS_DRM_PLANAR_MAX && i < bo_num; i++)
+    for (i = 0; i < SPRD_DRM_PLANAR_MAX && i < bo_num; i++)
     {
         tbm_bo bo = tbm_surface_internal_get_bo(buffer->dst, i);
         buf.handle[i] = (__u32)tbm_bo_get_handle(bo, TBM_DEVICE_DEFAULT).u32;
@@ -186,7 +187,7 @@ _tdm_sprd_pp_queue(tdm_sprd_pp_data *pp_data, tdm_sprd_pp_buffer *buffer, enum d
             buf.prop_id, buf.ops_id, buf.buf_type, buf.buf_id,
             buf.handle[0], buf.handle[1], buf.handle[2]);
 
-    ret = ioctl(sprd_data->drm_fd, DRM_IOCTL_EXYNOS_IPP_QUEUE_BUF, &buf);
+    ret = ioctl(sprd_data->drm_fd, DRM_IOCTL_SPRD_IPP_QUEUE_BUF, &buf);
     if (ret)
     {
         TDM_ERR("dst failed. prop_id(%d) op(%d) buf(%d) id(%d). %m",
@@ -199,7 +200,7 @@ _tdm_sprd_pp_queue(tdm_sprd_pp_data *pp_data, tdm_sprd_pp_buffer *buffer, enum d
     return TDM_ERROR_NONE;
 }
 #endif
-#if 0
+#if 1 
 static tdm_error
 _tdm_sprd_pp_cmd(tdm_sprd_pp_data *pp_data, enum drm_sprd_ipp_ctrl cmd)
 {
@@ -212,7 +213,7 @@ _tdm_sprd_pp_cmd(tdm_sprd_pp_data *pp_data, enum drm_sprd_ipp_ctrl cmd)
 
     TDM_DBG("prop_id(%d) ctrl(%d). ", ctrl.prop_id, ctrl.ctrl);
 
-    ret = ioctl(sprd_data->drm_fd, DRM_IOCTL_EXYNOS_IPP_CMD_CTRL, &ctrl);
+    ret = ioctl(sprd_data->drm_fd, DRM_IOCTL_SPRD_IPP_CMD_CTRL, &ctrl);
     if (ret)
     {
         TDM_ERR("failed. prop_id(%d) ctrl(%d). %m", ctrl.prop_id, ctrl.ctrl);
@@ -359,12 +360,12 @@ sprd_pp_destroy(tdm_pp *pp)
     LIST_FOR_EACH_ENTRY_SAFE(b, bb, &pp_data->buffer_list, link)
     {
         LIST_DEL(&b->link);
-#if 0
+#if 1
         _tdm_sprd_pp_queue(pp_data, b, IPP_BUF_DEQUEUE);
 #endif
         free(b);
     }
-#if 0
+#if 1
     if (pp_data->prop_id)
         _tdm_sprd_pp_cmd(pp_data, IPP_CTRL_STOP);
 #endif
@@ -421,7 +422,7 @@ sprd_pp_attach(tdm_pp *pp, tbm_surface_h src, tbm_surface_h dst)
 tdm_error
 sprd_pp_commit(tdm_pp *pp)
 {
-#if 0
+#if 1
     tdm_sprd_pp_data *pp_data = pp;
     tdm_sprd_pp_buffer *b = NULL, *bb = NULL;
     tdm_error ret = TDM_ERROR_NONE;

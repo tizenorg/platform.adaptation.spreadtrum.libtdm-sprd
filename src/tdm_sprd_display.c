@@ -410,9 +410,9 @@ _tdm_sprd_display_commit_layer(tdm_sprd_layer_data *layer_data)
     {
         if (drmModeSetPlane(sprd_data->drm_fd, layer_data->plane_id,
                             output_data->crtc_id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
-            TDM_ERR("unset plane(%d) filed: %m", layer_data->plane_id);
+            TDM_WRN("unset plane(%d) filed: %m", layer_data->plane_id);
 
-        return TDM_ERROR_NONE;
+       return TDM_ERROR_NONE;
     }
 
     /* check hw restriction*/
@@ -2006,7 +2006,7 @@ tdm_sprd_display_create_event_list(tdm_sprd_data *sprd_data)
     RETURN_VAL_IF_FAIL(sprd_data, TDM_ERROR_INVALID_PARAMETER);
     tdm_error ret_err = TDM_ERROR_NONE;
     hw_event_callback_t *vblank_event_p = NULL;
-//    hw_event_callback_t *ipp_event_p = NULL;
+    hw_event_callback_t *ipp_event_p = NULL;
     hw_event_callback_t *flip_complete_event_p = NULL;
 #ifdef HAVE_FB_VBLANK
 /** @TODO FB vblank */
@@ -2030,9 +2030,15 @@ tdm_sprd_display_create_event_list(tdm_sprd_data *sprd_data)
     flip_complete_event_p->hw_event_func = _sprd_drm_flip_complete_event;
     LIST_ADD(&flip_complete_event_p->link, &sprd_data->events_list);
 #endif
-#ifdef HAVE_IPP_DRM_EVENT
-/** @TODO SPRD IPP */
-#endif
+    if ((ipp_event_p = malloc(sizeof(hw_event_callback_t))) == NULL)
+    {
+        TDM_ERR("alloc_fail");
+        ret_err = TDM_ERROR_OUT_OF_MEMORY;
+        goto bad_l;
+    }
+    ipp_event_p->hw_event_type = DRM_SPRD_IPP_EVENT;
+    ipp_event_p->hw_event_func = tdm_sprd_pp_handler;
+    LIST_ADD(&ipp_event_p->link, &sprd_data->events_list);
     if (ret_err != TDM_ERROR_NONE)
         goto bad_l;
     return TDM_ERROR_NONE;

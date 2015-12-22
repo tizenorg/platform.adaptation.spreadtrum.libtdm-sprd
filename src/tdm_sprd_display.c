@@ -62,7 +62,7 @@ struct _tdm_sprd_output_data
     tdm_output_conn_status status;
 
     int mode_changed;
-    tdm_output_mode *current_mode;
+    const tdm_output_mode *current_mode;
 
     int waiting_vblank_event;
 };
@@ -1614,7 +1614,7 @@ sprd_output_get_dpms(tdm_output *output, tdm_output_dpms *dpms_value)
 }
 
 tdm_error
-sprd_output_set_mode(tdm_output *output, tdm_output_mode *mode)
+sprd_output_set_mode(tdm_output *output, const tdm_output_mode *mode)
 {
     tdm_sprd_output_data *output_data = output;
 

@@ -38,7 +38,7 @@ tdm_error    sprd_output_commit(tdm_output *output, int sync, void *user_data);
 tdm_error    sprd_output_set_commit_handler(tdm_output *output, tdm_output_commit_handler func);
 tdm_error    sprd_output_set_dpms(tdm_output *output, tdm_output_dpms dpms_value);
 tdm_error    sprd_output_get_dpms(tdm_output *output, tdm_output_dpms *dpms_value);
-tdm_error    sprd_output_set_mode(tdm_output *output, tdm_output_mode *mode);
+tdm_error    sprd_output_set_mode(tdm_output *output, const tdm_output_mode *mode);
 tdm_error    sprd_output_get_mode(tdm_output *output, const tdm_output_mode **mode);
 tdm_error    sprd_layer_get_capability(tdm_layer *layer, tdm_caps_layer *caps);
 tdm_error    sprd_layer_set_property(tdm_layer *layer, unsigned int id, tdm_value value);

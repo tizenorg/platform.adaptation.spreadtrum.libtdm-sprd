@@ -1,5 +1,5 @@
 Name:           libtdm-sprd
-Version:        1.0.0
+Version:        1.0.1
 Release:        0
 License:        MIT
 Summary:        Tizen Display Manager Spreadtrum Back-End Library

@@ -187,7 +187,7 @@ _tdm_sprd_display_get_mode(tdm_sprd_output_data *output_data)
 static tdm_sprd_display_buffer*
 _tdm_sprd_display_find_buffer(tdm_sprd_data *sprd_data, tbm_surface_h buffer)
 {
-    tdm_sprd_display_buffer *display_buffer;
+    tdm_sprd_display_buffer *display_buffer = NULL;
 
     LIST_FOR_EACH_ENTRY(display_buffer, &sprd_data->buffer_list, link)
     {
@@ -529,7 +529,7 @@ _tdm_sprd_display_create_layer_list_type(tdm_sprd_data *sprd_data)
 
     for (i = 0; i < sprd_data->plane_res->count_planes; i++)
     {
-        tdm_sprd_output_data *output_data;
+        tdm_sprd_output_data *output_data = NULL;
         tdm_sprd_layer_data *layer_data;
         drmModePlanePtr plane;
         unsigned int type = 0;
@@ -619,7 +619,7 @@ _tdm_sprd_display_create_layer_list_immutable_zpos(tdm_sprd_data *sprd_data)
 
     for (i = 0; i < sprd_data->plane_res->count_planes; i++)
     {
-        tdm_sprd_output_data *output_data;
+        tdm_sprd_output_data *output_data = NULL;
         tdm_sprd_layer_data *layer_data;
         drmModePlanePtr plane;
         unsigned int type = 0, zpos = 0;
@@ -717,7 +717,7 @@ _tdm_sprd_display_create_layer_list_not_fixed(tdm_sprd_data *sprd_data)
 
     for (i = 0; i < sprd_data->plane_res->count_planes; i++)
     {
-        tdm_sprd_output_data *output_data;
+        tdm_sprd_output_data *output_data = NULL;
         tdm_sprd_layer_data *layer_data;
         drmModePlanePtr plane;
 
@@ -845,7 +845,7 @@ _tdm_sprd_display_cb_destroy_buffer(tbm_surface_h buffer, void *user_data)
 tdm_error
 tdm_sprd_display_create_layer_list(tdm_sprd_data *sprd_data)
 {
-    tdm_sprd_output_data *output_data;
+    tdm_sprd_output_data *output_data = NULL;
     tdm_error ret;
 
     if (!sprd_data->has_zpos_info)
@@ -1152,7 +1152,7 @@ tdm_output**
 sprd_display_get_outputs(tdm_backend_data *bdata, int *count, tdm_error *error)
 {
     tdm_sprd_data *sprd_data = bdata;
-    tdm_sprd_output_data *output_data;
+    tdm_sprd_output_data *output_data = NULL;
     tdm_output **outputs;
     tdm_error ret;
     int i;
@@ -1334,7 +1334,7 @@ tdm_layer**
 sprd_output_get_layers(tdm_output *output,  int *count, tdm_error *error)
 {
     tdm_sprd_output_data *output_data = output;
-    tdm_sprd_layer_data *layer_data;
+    tdm_sprd_layer_data *layer_data = NULL;
     tdm_layer **layers;
     tdm_error ret;
     int i;
@@ -1489,7 +1489,7 @@ sprd_output_commit(tdm_output *output, int sync, void *user_data)
 {
     tdm_sprd_output_data *output_data = output;
     tdm_sprd_data *sprd_data;
-    tdm_sprd_layer_data *layer_data;
+    tdm_sprd_layer_data *layer_data = NULL;
     tdm_error ret;
 
     RETURN_VAL_IF_FAIL(output_data, TDM_ERROR_INVALID_PARAMETER);
@@ -1845,6 +1845,7 @@ sprd_layer_set_buffer(tdm_layer *layer, tbm_surface_h buffer)
         if (err != TDM_ERROR_NONE)
         {
             TDM_ERR("add destroy handler fail");
+            free(display_buffer);
             return TDM_ERROR_OPERATION_FAILED;
         }
         LIST_ADDTAIL(&display_buffer->link, &sprd_data->buffer_list);

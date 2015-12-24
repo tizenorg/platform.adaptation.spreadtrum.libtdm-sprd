@@ -14,7 +14,6 @@
 #include <fcntl.h>
 
 #include <xf86drm.h>
-#include <xf86drmMode.h>
 #include <tbm_surface.h>
 #include <tbm_surface_internal.h>
 #include <tdm_backend.h>
@@ -92,23 +91,11 @@ typedef struct _tdm_sprd_data
     struct list_head events_list;
     tdm_display *dpy;
     int drm_fd;
-    int fb_fd;
-    void * sprd_drm_dev;
+    int output_count;
 
-    /* If true, it means that the device has many planes for one crtc. If false,
-     * planes are dedicated to specific crtc.
-     */
-    int has_zpos_info;
-
-    /* If has_zpos_info is false and is_immutable_zpos is true, it means that
-     * planes are dedicated to specific crtc.
-     */
-    int is_immutable_zpos;
-
-    drmModeResPtr mode_res;
-    drmModePlaneResPtr plane_res;
     struct list_head output_list;
     struct list_head buffer_list;
+
 } tdm_sprd_data;
 
 uint32_t     tdm_sprd_format_to_drm_format(tbm_format format);
@@ -117,12 +104,6 @@ tbm_format   tdm_sprd_format_to_tbm_format(uint32_t format);
 tdm_error    tdm_sprd_display_create_output_list(tdm_sprd_data *sprd_data);
 void         tdm_sprd_display_destroy_output_list(tdm_sprd_data *sprd_data);
 tdm_error    tdm_sprd_display_create_layer_list(tdm_sprd_data *sprd_data);
-tdm_error    tdm_sprd_display_set_property(tdm_sprd_data *sprd_data,
-                                             unsigned int obj_id, unsigned int obj_type,
-                                             const char *name, unsigned int value);
-tdm_error    tdm_sprd_display_get_property(tdm_sprd_data *sprd_data,
-                                             unsigned int obj_id, unsigned int obj_type,
-                                             const char *name, unsigned int *value, int *is_immutable);
 
 tdm_error    tdm_sprd_pp_get_capability(tdm_sprd_data *sprd_data, tdm_caps_pp *caps);
 tdm_pp*      tdm_sprd_pp_create(tdm_sprd_data *sprd_data, tdm_error *error);

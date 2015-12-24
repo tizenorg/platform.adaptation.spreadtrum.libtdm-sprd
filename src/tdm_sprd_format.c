@@ -3,6 +3,8 @@
 #endif
 
 #include <drm_fourcc.h>
+#include <stdbool.h>
+#include <video/sprdfb.h>
 #include <tbm_surface.h>
 
 #include "tdm_sprd.h"
@@ -18,10 +20,10 @@
 typedef struct
 {
     tbm_format  tbm_format;
-    uint32_t    drm_format;
+    uint32_t    format;
 } tbm_sprd_format_data;
 
-static const tbm_sprd_format_data formats[] =
+static const tbm_sprd_format_data drm_formats[] =
 {
     {TBM_FORMAT_C8, DRM_FORMAT_C8},
     {TBM_FORMAT_RGB332, DRM_FORMAT_RGB332},
@@ -84,7 +86,18 @@ static const tbm_sprd_format_data formats[] =
     {TBM_FORMAT_NV12MT, DRM_FORMAT_12MT},
 };
 
-#define NUM_FORMATS (sizeof(formats) / sizeof(formats[0]))
+#define NUM_FORMATS (sizeof(drm_formats) / sizeof(drm_formats[0]))
+
+static const tbm_sprd_format_data sprdfb_formats[] =
+{
+    {TBM_FORMAT_RGB565, SPRD_DATA_FORMAT_RGB565},
+    {TBM_FORMAT_XRGB8888, SPRD_DATA_FORMAT_RGB888},
+    {TBM_FORMAT_YUV410, SPRD_DATA_FORMAT_YUV400},
+    {TBM_FORMAT_YUV420, SPRD_DATA_FORMAT_YUV420},
+    {TBM_FORMAT_YUV422, SPRD_DATA_FORMAT_YUV422},
+};
+
+#define NUM_SPRDFB_FORMATS (sizeof(sprdfb_formats) / sizeof(sprdfb_formats[0]))
 
 uint32_t
 tdm_sprd_format_to_drm_format(tbm_format format)
@@ -92,8 +105,22 @@ tdm_sprd_format_to_drm_format(tbm_format format)
     int i;
 
     for (i = 0; i < NUM_FORMATS; i++)
-        if (formats[i].tbm_format == format)
-            return formats[i].drm_format;
+        if (drm_formats[i].tbm_format == format)
+            return drm_formats[i].format;
+
+    TDM_ERR("tbm format '%c%c%c%c' not found", FOURCC_STR(format));
+
+    return 0;
+}
+
+uint32_t
+tdm_sprd_format_to_sprdfb_format(tbm_format format)
+{
+    int i;
+
+    for (i = 0; i < NUM_FORMATS; i++)
+        if (sprdfb_formats[i].tbm_format == format)
+            return sprdfb_formats[i].format;
 
     TDM_ERR("tbm format '%c%c%c%c' not found", FOURCC_STR(format));
 
@@ -106,10 +133,24 @@ tdm_sprd_format_to_tbm_format(uint32_t format)
     int i;
 
     for (i = 0; i < NUM_FORMATS; i++)
-        if (formats[i].drm_format == format)
-            return formats[i].tbm_format;
+        if (drm_formats[i].format == format)
+            return drm_formats[i].tbm_format;
 
     TDM_ERR("drm format '%c%c%c%c' not found", FOURCC_STR(format));
+
+    return 0;
+}
+
+tbm_format
+tdm_sprd_fb_format_to_tbm_format(uint32_t format)
+{
+    int i;
+
+    for (i = 0; i < NUM_FORMATS; i++)
+        if (sprdfb_formats[i].format == format)
+            return sprdfb_formats[i].tbm_format;
+
+    TDM_ERR("sprdfb format '%d' not found", format);
 
     return 0;
 }

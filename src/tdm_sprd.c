@@ -6,7 +6,6 @@
 #include <libudev.h>
 #endif
 
-#include "sprd_drmif.h"
 #include "tdm_sprd.h"
 #include <tdm_helper.h>
 
@@ -60,6 +59,7 @@ static int
 _tdm_sprd_open_drm(void)
 {
     int fd = -1;
+    int drmIRQ = 78;
 
     fd = drmOpen(SPRD_DRM_NAME, NULL);
     if (fd < 0)
@@ -133,27 +133,12 @@ _tdm_sprd_open_drm(void)
     }
 close_l:
 #endif
+
+    drmCtlInstHandler (fd, drmIRQ);
+
     return fd;
 }
-#if 0
-static int
-_tdm_sprd_drm_user_handler(struct drm_event *event)
-{
-    struct drm_sprd_ipp_event *ipp;
 
-    if (event->type != DRM_EXYNOS_IPP_EVENT)
-        return -1;
-
-    TDM_DBG("got ipp event");
-
-    ipp = (struct drm_sprd_ipp_event *)event;
-
-    tdm_sprd_pp_handler(ipp->prop_id, ipp->buf_id, ipp->tv_sec, ipp->tv_usec,
-                          (void *)(unsigned long)ipp->user_data);
-
-    return 0;
-}
-#endif
 void
 tdm_sprd_deinit(tdm_backend_data *bdata)
 {
@@ -161,21 +146,10 @@ tdm_sprd_deinit(tdm_backend_data *bdata)
         return;
 
     TDM_INFO("deinit");
-#if 0
-    drmRemoveUserHandler(tdm_helper_drm_fd, _tdm_sprd_drm_user_handler);
-#endif
+
     tdm_sprd_display_destroy_output_list(sprd_data);
     tdm_sprd_display_destroy_event_list(sprd_data);
-    if (sprd_data->plane_res)
-        drmModeFreePlaneResources(sprd_data->plane_res);
-    if (sprd_data->mode_res)
-        drmModeFreeResources(sprd_data->mode_res);
-    if (sprd_data->drm_fd >= 0)
-    {
-        if (sprd_data->sprd_drm_dev)
-            sprd_device_destroy(sprd_data->sprd_drm_dev);
-        close(sprd_data->drm_fd);
-    }
+
     free(sprd_data);
     sprd_data = NULL;
 }
@@ -223,24 +197,12 @@ tdm_sprd_init(tdm_display *dpy, tdm_error *error)
         goto failed_l;
 
     sprd_data->dpy = dpy;
-    sprd_data->fb_fd = -1;
     sprd_data->drm_fd = -1;
-#if 0
-    if (tdm_helper_drm_fd >= 0)
-    {
-        sprd_data->drm_fd = tdm_helper_drm_fd;
-        drmAddUserHandler(tdm_helper_drm_fd, _tdm_sprd_drm_user_handler);
-    }
-#endif
+
     if (sprd_data->drm_fd < 0)
         sprd_data->drm_fd = _tdm_sprd_open_drm();
 
     if (sprd_data->drm_fd < 0)
-    {
-        ret = TDM_ERROR_OPERATION_FAILED;
-        goto failed_l;
-    }
-    if ((sprd_data->sprd_drm_dev = sprd_device_create(sprd_data->drm_fd)) == NULL)
     {
         ret = TDM_ERROR_OPERATION_FAILED;
         goto failed_l;
@@ -250,48 +212,11 @@ tdm_sprd_init(tdm_display *dpy, tdm_error *error)
     if (drmSetClientCap(sprd_data->drm_fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1) < 0)
         TDM_WRN("Set DRM_CLIENT_CAP_UNIVERSAL_PLANES failed_l");
 #endif
-    sprd_data->mode_res = drmModeGetResources(sprd_data->drm_fd);
-    if (!sprd_data->mode_res)
-    {
-        TDM_ERR("no drm resource: %m");
-        ret = TDM_ERROR_OPERATION_FAILED;
-        goto failed_l;
-    }
-
-    sprd_data->plane_res = drmModeGetPlaneResources(sprd_data->drm_fd);
-    if (!sprd_data->plane_res)
-    {
-        TDM_ERR("no drm plane resource: %m");
-        ret = TDM_ERROR_OPERATION_FAILED;
-        goto failed_l;
-    }
-
-    if (sprd_data->plane_res->count_planes <= 0)
-    {
-        TDM_ERR("no drm plane resource");
-        ret = TDM_ERROR_OPERATION_FAILED;
-        goto failed_l;
-    }
-
-    ret = tdm_sprd_display_get_property(sprd_data, sprd_data->plane_res->planes[0],
-                                          DRM_MODE_OBJECT_PLANE, "zpos", NULL,
-                                          &sprd_data->is_immutable_zpos);
-    if (ret == TDM_ERROR_NONE)
-    {
-        sprd_data->has_zpos_info = 1;
-        if (sprd_data->is_immutable_zpos)
-            TDM_DBG("plane has immutable zpos info");
-    }
-    else
-        TDM_DBG("plane doesn't have zpos info");
 
     ret = tdm_sprd_display_create_output_list(sprd_data);
     if (ret != TDM_ERROR_NONE)
         goto failed_l;
 
-    ret = tdm_sprd_display_create_layer_list(sprd_data);
-    if (ret != TDM_ERROR_NONE)
-        goto failed_l;
     ret = tdm_sprd_display_create_event_list(sprd_data);
     if (ret != TDM_ERROR_NONE)
         goto failed_l;

@@ -23,7 +23,7 @@ LT_INIT([disable-static])
 # Enable quiet compiles on automake 1.11.
 m4_ifdef([AM_SILENT_RULES], [AM_SILENT_RULES([yes])])
 
-PKG_CHECK_MODULES(TDM_SPRD, libtdm libtbm libdrm libdrm_sprd)
+PKG_CHECK_MODULES(TDM_SPRD, libtdm libtbm libdrm)
 PKG_CHECK_MODULES(UDEV, libudev, [udev=yes], [udev=no])
 if test x"$udev" = xyes; then
 	AC_DEFINE(HAVE_UDEV,1,[Enable udev-based monitor hotplug detection])

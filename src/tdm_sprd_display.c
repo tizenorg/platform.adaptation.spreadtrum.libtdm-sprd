@@ -2,8 +2,9 @@
 #include "config.h"
 #endif
 
-#include <drm_fourcc.h>
 #include <tdm_helper.h>
+#include <linux/fb.h>
+#include <video/sprdfb.h>
 #include "tdm_sprd.h"
 
 #define MIN_WIDTH   32
@@ -13,6 +14,8 @@
 #else
 typedef struct drm_event hw_event_t;
 #endif
+
+#define FB_DEV_LCD  "/dev/fb0"
 
 typedef struct _tdm_sprd_output_data tdm_sprd_output_data;
 typedef struct _tdm_sprd_layer_data tdm_sprd_layer_data;
@@ -45,6 +48,14 @@ typedef struct _tdm_sprd_display_buffer
     unsigned int fb_id;
     tdm_buffer *buffer;
     int width;
+    unsigned int height;
+    unsigned int format;
+    unsigned int handles[4];
+    unsigned int name[4];
+    unsigned int pitches[4];
+    unsigned int offsets[4];
+    unsigned int size;
+    unsigned int count;
 } tdm_sprd_display_buffer;
 
 struct _tdm_sprd_output_data
@@ -53,13 +64,8 @@ struct _tdm_sprd_output_data
 
     /* data which are fixed at initializing */
     tdm_sprd_data *sprd_data;
-    uint32_t connector_id;
-    uint32_t encoder_id;
-    uint32_t crtc_id;
     uint32_t pipe;
-    uint32_t dpms_prop_id;
     int count_modes;
-    drmModeModeInfoPtr drm_modes;
     tdm_output_mode *output_modes;
     tdm_output_type connector_type;
     unsigned int connector_type_id;
@@ -74,6 +80,14 @@ struct _tdm_sprd_output_data
     tdm_output_mode *current_mode;
 
     int waiting_vblank_event;
+
+    char * fb_fd_name;
+    int fb_fd;
+
+    struct fb_var_screeninfo mi;
+
+    tdm_output_dpms dpms_value;
+
 };
 
 struct _tdm_sprd_layer_data
@@ -83,9 +97,11 @@ struct _tdm_sprd_layer_data
     /* data which are fixed at initializing */
     tdm_sprd_data *sprd_data;
     tdm_sprd_output_data *output_data;
-    uint32_t plane_id;
     tdm_layer_capability capabilities;
-    int zpos;
+
+    //list of sprd formats
+    int format_count;
+    int *formats;
 
     /* not fixed data below */
     tdm_info_layer info;
@@ -103,6 +119,17 @@ typedef struct _Drm_Event_Context
                        unsigned int  tv_sec, unsigned int  tv_usec, void *user_data);
 } Drm_Event_Context;
 
+//TODO:: support other formats
+int img_layer_formats[] = {
+        SPRD_DATA_FORMAT_RGB888
+};
+
+//TODO:: support other formats
+int osd_layer_formats[] = {
+        SPRD_DATA_FORMAT_RGB888
+};
+
+#if 0
 static tdm_error
 check_hw_restriction(unsigned int crtc_w, unsigned int buf_w,
                      unsigned int src_x, unsigned int src_w, unsigned int dst_x, unsigned int dst_w,
@@ -166,32 +193,8 @@ check_hw_restriction(unsigned int crtc_w, unsigned int buf_w,
 
     return TDM_ERROR_NONE;
 }
+#endif
 
-static drmModeModeInfoPtr
-_tdm_sprd_display_get_mode(tdm_sprd_output_data *output_data)
-{
-    int i;
-
-    if (!output_data->current_mode)
-    {
-        TDM_ERR("no output_data->current_mode");
-        return NULL;
-    }
-
-    for (i = 0; i < output_data->count_modes; i++)
-    {
-        drmModeModeInfoPtr drm_mode = &output_data->drm_modes[i];
-        if ((drm_mode->hdisplay == output_data->current_mode->width) &&
-            (drm_mode->vdisplay == output_data->current_mode->height) &&
-            (drm_mode->vrefresh == output_data->current_mode->refresh) &&
-            (drm_mode->flags == output_data->current_mode->flags) &&
-            (drm_mode->type == output_data->current_mode->type) &&
-            !(strncmp(drm_mode->name, output_data->current_mode->name, TDM_NAME_LEN)))
-            return drm_mode;
-    }
-
-    return NULL;
-}
 
 static tdm_sprd_display_buffer*
 _tdm_sprd_display_find_buffer(tdm_sprd_data *sprd_data, tdm_buffer *buffer)
@@ -207,15 +210,50 @@ _tdm_sprd_display_find_buffer(tdm_sprd_data *sprd_data, tdm_buffer *buffer)
     return NULL;
 }
 
-static void
-_tdm_sprd_display_to_tdm_mode(drmModeModeInfoPtr drm_mode, tdm_output_mode *tdm_mode)
+
+static inline uint32_t _get_refresh(struct fb_var_screeninfo * timing)
 {
-    tdm_mode->width = drm_mode->hdisplay;
-    tdm_mode->height = drm_mode->vdisplay;
-    tdm_mode->refresh = drm_mode->vrefresh;
-    tdm_mode->flags = drm_mode->flags;
-    tdm_mode->type = drm_mode->type;
-    snprintf(tdm_mode->name, TDM_NAME_LEN, "%s", drm_mode->name);
+    uint32_t pixclock, hfreq, htotal, vtotal;
+
+    pixclock = PICOS2KHZ(timing->pixclock) * 1000;
+
+    htotal = timing->xres + timing->right_margin + timing->hsync_len +
+            timing->left_margin;
+    vtotal = timing->yres + timing->lower_margin + timing->vsync_len +
+            timing->upper_margin;
+
+    if (timing->vmode & FB_VMODE_INTERLACED)
+        vtotal /= 2;
+    if (timing->vmode & FB_VMODE_DOUBLE)
+        vtotal *= 2;
+
+    hfreq = pixclock/htotal;
+    return hfreq/vtotal;
+}
+
+/*
+ * Convert fb_var_screeninfo to tdm_output_mode
+ */
+static inline void _tdm_sprd_display_to_tdm_mode(struct fb_var_screeninfo * timing, tdm_output_mode  *mode)
+{
+
+    if (!timing->pixclock)
+        return;
+
+    mode->refresh = _get_refresh(timing);
+    mode->width = timing->xres;
+    mode->height = timing->yres;
+    mode->type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED;
+
+    if (timing->vmode & FB_VMODE_INTERLACED)
+        mode->flags |= DRM_MODE_FLAG_INTERLACE;
+
+    if (timing->vmode & FB_VMODE_DOUBLE)
+        mode->flags |= DRM_MODE_FLAG_DBLSCAN;
+
+    int interlaced = !!(mode->flags & DRM_MODE_FLAG_INTERLACE);
+    snprintf(mode->name, DRM_DISPLAY_MODE_LEN, "%dx%d%s", mode->width, mode->height,
+             interlaced ? "i" : "");
 }
 
 static int
@@ -282,11 +320,11 @@ _tdm_sprd_display_wait_vblank(int fd, int pipe, uint *target_msc, void *data)
 {
     drmVBlank vbl;
 
-    vbl.request.type =  DRM_VBLANK_ABSOLUTE | DRM_VBLANK_EVENT;
+    vbl.request.type =  DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT;
     if (pipe > 0)
         vbl.request.type |= DRM_VBLANK_SECONDARY;
 
-    vbl.request.sequence = *target_msc;
+    vbl.request.sequence = 1;
     vbl.request.signal = (unsigned long)(uintptr_t)data;
 
     if (_localdrmWaitVBlank(fd, &vbl))
@@ -302,157 +340,123 @@ _tdm_sprd_display_wait_vblank(int fd, int pipe, uint *target_msc, void *data)
 }
 
 static tdm_error
-_tdm_sprd_display_commit_primary_layer(tdm_sprd_layer_data *layer_data)
+_tdm_sprd_display_output_disable (tdm_sprd_output_data *output_data)
 {
-    tdm_sprd_data *sprd_data = layer_data->sprd_data;
-    tdm_sprd_output_data *output_data = layer_data->output_data;
-
-    if (output_data->mode_changed && layer_data->display_buffer_changed)
+    TDM_ERR ("FB_BLANK_POWERDOWN\n");
+    if (ioctl (output_data->fb_fd, FBIOBLANK, FB_BLANK_POWERDOWN) < 0)
     {
-        drmModeModeInfoPtr mode;
-
-        if (!layer_data->display_buffer)
-        {
-            TDM_ERR("primary layer should have a buffer for modestting");
-            return TDM_ERROR_BAD_REQUEST;
-        }
-
-        output_data->mode_changed = 0;
-        layer_data->display_buffer_changed = 0;
-        layer_data->info_changed = 0;
-
-        mode = _tdm_sprd_display_get_mode(output_data);
-        if (!mode)
-        {
-            TDM_ERR("couldn't find proper mode");
-            return TDM_ERROR_BAD_REQUEST;
-        }
-
-        if (drmModeSetCrtc(sprd_data->drm_fd, output_data->crtc_id,
-                           layer_data->display_buffer->fb_id, 0, 0,
-                           &output_data->connector_id, 1, mode))
-        {
-            TDM_ERR("set crtc failed: %m");
-            return TDM_ERROR_OPERATION_FAILED;
-        }
-
-        return TDM_ERROR_NONE;
+        TDM_ERR ("FB_BLANK_POWERDOWN is failed: %s\n", strerror (errno));
+        return TDM_ERROR_OPERATION_FAILED;
     }
-    else if (layer_data->display_buffer_changed)
-    {
-        layer_data->display_buffer_changed = 0;
-
-        if (!layer_data->display_buffer)
-        {
-            if (drmModeSetCrtc(sprd_data->drm_fd, output_data->crtc_id,
-                               0, 0, 0, NULL, 0, NULL))
-            {
-                TDM_ERR("unset crtc failed: %m");
-                return TDM_ERROR_OPERATION_FAILED;
-            }
-        }
-        else
-        {
-#if 0
-            if (drmModePageFlip(sprd_data->drm_fd, output_data->crtc_id,
-                                layer_data->display_buffer->fb_id, DRM_MODE_PAGE_FLIP_EVENT, layer_data->display_buffer))
-            {
-                TDM_ERR("pageflip failed: %m");
-                return TDM_ERROR_OPERATION_FAILED;
-            }
-#endif
-            drmModeModeInfoPtr mode;
-            mode = _tdm_sprd_display_get_mode(output_data);
-            if (drmModeSetCrtc(sprd_data->drm_fd, output_data->crtc_id, layer_data->display_buffer->fb_id, 0 ,0,
-                               &output_data->connector_id, 1, mode)) {
-            }
-        }
-    }
-
     return TDM_ERROR_NONE;
 }
 
 static tdm_error
-_tdm_sprd_display_commit_layer(tdm_sprd_layer_data *layer_data)
+_tdm_sprd_display_output_enable(tdm_sprd_output_data *output_data)
 {
-    tdm_sprd_data *sprd_data = layer_data->sprd_data;
-    tdm_sprd_output_data *output_data = layer_data->output_data;
-    unsigned int new_src_x, new_src_w;
-    unsigned int new_dst_x, new_dst_w;
-    uint32_t fx, fy, fw, fh;
-    int crtc_w;
-
-    if (!layer_data->display_buffer_changed && !layer_data->info_changed)
-        return TDM_ERROR_NONE;
-
-    if (output_data->current_mode)
-        crtc_w = output_data->current_mode->width;
-    else
+    TDM_ERR ("FB_BLANK_UNBLANK\n");
+    if (ioctl (output_data->fb_fd, FBIOBLANK, FB_BLANK_UNBLANK) < 0)
     {
-        drmModeCrtcPtr crtc = drmModeGetCrtc(sprd_data->drm_fd, output_data->crtc_id);
-        if (!crtc)
-        {
-            TDM_ERR("getting crtc failed");
-            return TDM_ERROR_OPERATION_FAILED;
-        }
-        crtc_w = crtc->width;
-        if (crtc_w == 0)
-        {
-            TDM_ERR("getting crtc width failed");
-            return TDM_ERROR_OPERATION_FAILED;
-        }
-    }
-
-    layer_data->display_buffer_changed = 0;
-    layer_data->info_changed = 0;
-
-    if (!layer_data->display_buffer)
-    {
-        if (drmModeSetPlane(sprd_data->drm_fd, layer_data->plane_id,
-                            output_data->crtc_id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
-            TDM_WRN("unset plane(%d) filed: %m", layer_data->plane_id);
-
-       return TDM_ERROR_NONE;
-    }
-
-    /* check hw restriction*/
-    if (check_hw_restriction(crtc_w, layer_data->display_buffer->width,
-                             layer_data->info.src_config.pos.x,
-                             layer_data->info.src_config.pos.w,
-                             layer_data->info.dst_pos.x,
-                             layer_data->info.dst_pos.w,
-                             &new_src_x, &new_src_w, &new_dst_x, &new_dst_w) != TDM_ERROR_NONE)
-    {
-        TDM_WRN("not going to set plane(%d)", layer_data->plane_id);
-        return TDM_ERROR_NONE;
-    }
-
-    if (layer_data->info.src_config.pos.x != new_src_x)
-        TDM_DBG("src_x changed: %d => %d", layer_data->info.src_config.pos.x, new_src_x);
-    if (layer_data->info.src_config.pos.w != new_src_w)
-        TDM_DBG("src_w changed: %d => %d", layer_data->info.src_config.pos.w, new_src_w);
-    if (layer_data->info.dst_pos.x != new_dst_x)
-        TDM_DBG("dst_x changed: %d => %d", layer_data->info.dst_pos.x, new_dst_x);
-    if (layer_data->info.dst_pos.w != new_dst_w)
-        TDM_DBG("dst_w changed: %d => %d", layer_data->info.dst_pos.w, new_dst_w);
-
-    /* Source values are 16.16 fixed point */
-    fx = ((unsigned int)new_src_x) << 16;
-    fy = ((unsigned int)layer_data->info.src_config.pos.y) << 16;
-    fw = ((unsigned int)new_src_w) << 16;
-    fh = ((unsigned int)layer_data->info.src_config.pos.h) << 16;
-
-    if (drmModeSetPlane(sprd_data->drm_fd, layer_data->plane_id,
-                        output_data->crtc_id, layer_data->display_buffer->fb_id, 0,
-                        new_dst_x, layer_data->info.dst_pos.y,
-                        new_dst_w, layer_data->info.dst_pos.h,
-                        fx, fy, fw, fh) < 0)
-    {
-        TDM_ERR("set plane(%d) failed: %m", layer_data->plane_id);
+        TDM_ERR ("FB_BLANK_UNBLANK is failed: %s\n", strerror (errno));
         return TDM_ERROR_OPERATION_FAILED;
     }
-
     return TDM_ERROR_NONE;
+}
+
+static tdm_error
+_tdm_sprd_display_do_commit(tdm_sprd_output_data *output_data)
+{
+    tdm_error res = TDM_ERROR_NONE;
+    tdm_sprd_layer_data *layer_data;
+    overlay_info ovi;
+    overlay_display ov_disp = {0,};
+    int layer_index;
+
+    RETURN_VAL_IF_FAIL(output_data, TDM_ERROR_OPERATION_FAILED);
+
+    if (output_data->dpms_value == TDM_OUTPUT_DPMS_OFF)
+    {
+        output_data->dpms_value = TDM_OUTPUT_DPMS_ON;
+        _tdm_sprd_display_output_enable(output_data);
+    }
+
+    LIST_FOR_EACH_ENTRY(layer_data, &output_data->layer_list, link)
+    {
+        if(!layer_data->display_buffer_changed && !layer_data->info_changed)
+            continue;
+
+        if (layer_data->capabilities & TDM_LAYER_CAPABILITY_PRIMARY)
+        {
+            layer_index = SPRD_LAYER_OSD;
+        }
+        else if (layer_data->capabilities & TDM_LAYER_CAPABILITY_OVERLAY)
+        {
+            layer_index = SPRD_LAYER_IMG;
+        }
+        else
+        {
+            TDM_ERR ("layer capability (0x%x) not supported\n", layer_data->capabilities);
+            continue;
+        }
+
+        if(layer_data->display_buffer)
+        {
+            ovi.layer_index = layer_index;
+            ov_disp.layer_index |= layer_index;
+
+            //TODO:: support different formats
+            ovi.data_type = SPRD_DATA_FORMAT_RGB888;
+            ovi.endian.y = SPRD_DATA_ENDIAN_B0B1B2B3;
+            ovi.endian.u = SPRD_DATA_ENDIAN_B0B1B2B3;
+            ovi.endian.v = SPRD_DATA_ENDIAN_B0B1B2B3;
+            ovi.rb_switch = 0;
+
+            ovi.size.hsize = layer_data->display_buffer->pitches[0] / 4;
+            ovi.size.vsize = layer_data->display_buffer->height;
+
+            ovi.rect.x = layer_data->info.dst_pos.x;
+            ovi.rect.y = layer_data->info.dst_pos.y;
+            ovi.rect.w = layer_data->info.src_config.pos.w;
+            ovi.rect.h = layer_data->info.src_config.pos.h;
+
+            if (ovi.layer_index == SPRD_LAYER_OSD)
+            {
+                ov_disp.osd_handle = layer_data->display_buffer->name[0];
+            }
+            else if (ovi.layer_index == SPRD_LAYER_IMG)
+            {
+                ov_disp.img_handle = layer_data->display_buffer->name[0];
+            }
+
+            TDM_ERR("SPRD_FB_SET_OVERLAY(%d) rect:%dx%d+%d+%d size:%dx%d\n", ovi.layer_index,
+                    ovi.rect.w, ovi.rect.h, ovi.rect.x, ovi.rect.y, ovi.size.hsize, ovi.size.vsize);
+            if (ioctl (layer_data->output_data->fb_fd, SPRD_FB_SET_OVERLAY, &ovi) == -1)
+            {
+                TDM_ERR ("SPRD_FB_SET_OVERLAY(%d) error:%s\n", layer_index, strerror (errno));
+            }
+        }
+        else
+        {
+            if (ioctl(layer_data->output_data->fb_fd, SPRD_FB_UNSET_OVERLAY, &layer_index) == -1)
+            {
+                TDM_ERR ("SPRD_FB_UNSET_OVERLAY(%d) error:%s\n", layer_index, strerror (errno));
+            }
+        }
+    }
+
+
+    if (ov_disp.layer_index)
+    {
+        ov_disp.display_mode = SPRD_DISPLAY_OVERLAY_ASYNC;
+
+        TDM_ERR("SPRD_FB_DISPLAY_OVERLAY(%d) osd_handle:%d img_handle:%d\n", ov_disp.layer_index, ov_disp.osd_handle, ov_disp.img_handle);
+        if (ioctl(output_data->fb_fd, SPRD_FB_DISPLAY_OVERLAY, &ov_disp) == -1) {
+            TDM_ERR( "SPRD_FB_DISPLAY_OVERLAY(%d) error: %s \n", strerror (errno), ov_disp.layer_index);
+            res = TDM_ERROR_OPERATION_FAILED;
+        }
+    }
+
+    return res;
 }
 
 #if 0
@@ -544,281 +548,98 @@ _tdm_sprd_display_events_handle(int fd, Drm_Event_Context *evctx)
     return 0;
 }
 #endif
+
 static tdm_error
-_tdm_sprd_display_create_layer_list_type(tdm_sprd_data *sprd_data)
+_tdm_sprd_display_create_layer_list_LCD(tdm_sprd_output_data *output_data)
 {
-    tdm_error ret;
-    int i;
+    RETURN_VAL_IF_FAIL(output_data, TDM_ERROR_OPERATION_FAILED);
 
-    for (i = 0; i < sprd_data->plane_res->count_planes; i++)
+    tdm_sprd_data *sprd_data = output_data->sprd_data;
+    tdm_sprd_layer_data *layer_data;
+
+    //create OSD layer
+    layer_data = calloc (1, sizeof(tdm_sprd_layer_data));
+    if (!layer_data)
     {
-        tdm_sprd_output_data *output_data;
-        tdm_sprd_layer_data *layer_data;
-        drmModePlanePtr plane;
-        unsigned int type = 0;
-
-        plane = drmModeGetPlane(sprd_data->drm_fd, sprd_data->plane_res->planes[i]);
-        if (!plane)
-        {
-            TDM_ERR("no plane");
-            continue;
-        }
-
-        ret = tdm_sprd_display_get_property(sprd_data, sprd_data->plane_res->planes[i],
-                                              DRM_MODE_OBJECT_PLANE, "type", &type, NULL);
-        if (ret != TDM_ERROR_NONE)
-        {
-            TDM_ERR("plane(%d) doesn't have 'type' info", sprd_data->plane_res->planes[i]);
-            drmModeFreePlane(plane);
-            continue;
-        }
-
-        layer_data = calloc(1, sizeof(tdm_sprd_layer_data));
-        if (!layer_data)
-        {
-            TDM_ERR("alloc failed");
-            drmModeFreePlane(plane);
-            continue;
-        }
-
-        LIST_FOR_EACH_ENTRY(output_data, &sprd_data->output_list, link)
-        {
-            if (plane->possible_crtcs & (1 << output_data->pipe))
-                break;
-        }
-
-        if (!output_data)
-        {
-            TDM_ERR("plane(%d) couldn't found proper output", plane->plane_id);
-            drmModeFreePlane(plane);
-            free(layer_data);
-            continue;
-        }
-
-        layer_data->sprd_data = sprd_data;
-        layer_data->output_data = output_data;
-        layer_data->plane_id = sprd_data->plane_res->planes[i];
-
-        if (type == DRM_PLANE_TYPE_CURSOR)
-        {
-            layer_data->capabilities = TDM_LAYER_CAPABILITY_CURSOR | TDM_LAYER_CAPABILITY_GRAPHIC;
-            layer_data->zpos = 2;
-        }
-        else if (type == DRM_PLANE_TYPE_OVERLAY)
-        {
-            layer_data->capabilities = TDM_LAYER_CAPABILITY_OVERLAY | TDM_LAYER_CAPABILITY_GRAPHIC;
-            layer_data->zpos = 1;
-        }
-        else if (type == DRM_PLANE_TYPE_PRIMARY)
-        {
-            layer_data->capabilities = TDM_LAYER_CAPABILITY_PRIMARY | TDM_LAYER_CAPABILITY_GRAPHIC;
-            layer_data->zpos = 0;
-            output_data->primary_layer = layer_data;
-        }
-        else
-        {
-            drmModeFreePlane(plane);
-            free(layer_data);
-            continue;
-        }
-
-        TDM_DBG("layer_data(%p) plane_id(%d) crtc_id(%d) zpos(%d) capabilities(%x)",
-                layer_data, layer_data->plane_id, layer_data->output_data->crtc_id,
-                layer_data->zpos, layer_data->capabilities);
-
-        LIST_ADDTAIL(&layer_data->link, &output_data->layer_list);
-
-        drmModeFreePlane(plane);
+        TDM_ERR("alloc failed");
     }
+
+    layer_data->sprd_data = sprd_data;
+    layer_data->output_data = output_data;
+
+    layer_data->capabilities = TDM_LAYER_CAPABILITY_PRIMARY | TDM_LAYER_CAPABILITY_GRAPHIC;
+    output_data->primary_layer = layer_data;
+
+    layer_data->format_count = sizeof(osd_layer_formats)/sizeof(int);
+    layer_data->formats = osd_layer_formats;
+
+    TDM_DBG("layer_data(%p) capabilities(%x)", layer_data, layer_data->capabilities);
+
+    LIST_ADDTAIL(&layer_data->link, &output_data->layer_list);
+
+
+    //create IMG layer
+    layer_data = calloc (1, sizeof(tdm_sprd_layer_data));
+    if (!layer_data)
+    {
+        TDM_ERR("alloc failed");
+    }
+    layer_data->sprd_data = sprd_data;
+    layer_data->output_data = output_data;
+    layer_data->capabilities = TDM_LAYER_CAPABILITY_OVERLAY | TDM_LAYER_CAPABILITY_GRAPHIC;
+    output_data->primary_layer = layer_data;
+
+    layer_data->format_count = sizeof(img_layer_formats)/sizeof(int);
+    layer_data->formats = img_layer_formats;
+
+    TDM_DBG("layer_data(%p) capabilities(%x)", layer_data, layer_data->capabilities);
+
+    LIST_ADDTAIL(&layer_data->link, &output_data->layer_list);
+
 
     return TDM_ERROR_NONE;
 }
 
-static tdm_error
-_tdm_sprd_display_create_layer_list_immutable_zpos(tdm_sprd_data *sprd_data)
+tdm_error
+_tdm_sprd_display_output_update(tdm_sprd_output_data * output)
 {
-    tdm_error ret;
-    int i;
+    RETURN_VAL_IF_FAIL(output, TDM_ERROR_OPERATION_FAILED);
+    RETURN_VAL_IF_FAIL(output->fb_fd_name, TDM_ERROR_OPERATION_FAILED);
 
-    for (i = 0; i < sprd_data->plane_res->count_planes; i++)
+    if (!output->fb_fd)
+        output->fb_fd = open (output->fb_fd_name, O_RDWR, 0);
+
+    if (output->fb_fd <= 0)
+        goto failed;
+
+   if (ioctl (output->fb_fd, FBIOGET_VSCREENINFO, &output->mi) == -1)
+        goto failed;
+
+    output->status = TDM_OUTPUT_CONN_STATUS_CONNECTED;
+
+    if (output->mi.activate & FB_ACTIVATE_VBL)
     {
-        tdm_sprd_output_data *output_data;
-        tdm_sprd_layer_data *layer_data;
-        drmModePlanePtr plane;
-        unsigned int type = 0, zpos = 0;
-
-        plane = drmModeGetPlane(sprd_data->drm_fd, sprd_data->plane_res->planes[i]);
-        if (!plane)
-        {
-            TDM_ERR("no plane");
-            continue;
-        }
-
-        ret = tdm_sprd_display_get_property(sprd_data, sprd_data->plane_res->planes[i],
-                                              DRM_MODE_OBJECT_PLANE, "type", &type, NULL);
-        if (ret != TDM_ERROR_NONE)
-        {
-            TDM_ERR("plane(%d) doesn't have 'type' info", sprd_data->plane_res->planes[i]);
-            drmModeFreePlane(plane);
-            continue;
-        }
-
-        ret = tdm_sprd_display_get_property(sprd_data, sprd_data->plane_res->planes[i],
-                                              DRM_MODE_OBJECT_PLANE, "zpos", &zpos, NULL);
-        if (ret != TDM_ERROR_NONE)
-        {
-            TDM_ERR("plane(%d) doesn't have 'zpos' info", sprd_data->plane_res->planes[i]);
-            drmModeFreePlane(plane);
-            continue;
-        }
-
-        layer_data = calloc(1, sizeof(tdm_sprd_layer_data));
-        if (!layer_data)
-        {
-            TDM_ERR("alloc failed");
-            drmModeFreePlane(plane);
-            continue;
-        }
-
-        LIST_FOR_EACH_ENTRY(output_data, &sprd_data->output_list, link)
-        {
-            if (plane->possible_crtcs & (1 << output_data->pipe))
-                break;
-        }
-
-        if (!output_data)
-        {
-            TDM_ERR("plane(%d) couldn't found proper output", plane->plane_id);
-            drmModeFreePlane(plane);
-            free(layer_data);
-            continue;
-        }
-
-        layer_data->sprd_data = sprd_data;
-        layer_data->output_data = output_data;
-        layer_data->plane_id = sprd_data->plane_res->planes[i];
-        layer_data->zpos = zpos;
-
-        if (type == DRM_PLANE_TYPE_CURSOR)
-            layer_data->capabilities = TDM_LAYER_CAPABILITY_CURSOR | TDM_LAYER_CAPABILITY_GRAPHIC;
-        else if (type == DRM_PLANE_TYPE_OVERLAY)
-            layer_data->capabilities = TDM_LAYER_CAPABILITY_OVERLAY | TDM_LAYER_CAPABILITY_GRAPHIC;
-        else if (type == DRM_PLANE_TYPE_PRIMARY)
-        {
-            layer_data->capabilities = TDM_LAYER_CAPABILITY_PRIMARY | TDM_LAYER_CAPABILITY_GRAPHIC;
-            output_data->primary_layer = layer_data;
-        }
-        else
-        {
-            drmModeFreePlane(plane);
-            free(layer_data);
-            continue;
-        }
-
-        TDM_DBG("layer_data(%p) plane_id(%d) crtc_id(%d) zpos(%d) capabilities(%x)",
-                layer_data, layer_data->plane_id, layer_data->output_data->crtc_id,
-                layer_data->zpos, layer_data->capabilities);
-
-        LIST_ADDTAIL(&layer_data->link, &output_data->layer_list);
-
-        drmModeFreePlane(plane);
+        output->dpms_value = TDM_OUTPUT_DPMS_ON;
     }
+    else
+    {
+        output->dpms_value = TDM_OUTPUT_DPMS_OFF;
+    }
+
 
     return TDM_ERROR_NONE;
-}
 
-static tdm_error
-_tdm_sprd_display_create_layer_list_not_fixed(tdm_sprd_data *sprd_data)
-{
-    int i, find_pipe = -1;
 
-    if (sprd_data->mode_res->count_connectors * LAYER_COUNT_PER_OUTPUT > sprd_data->plane_res->count_planes)
+failed:
+
+    if (output->fb_fd > 0)
     {
-        TDM_ERR("not enough layers");
-        return TDM_ERROR_OPERATION_FAILED;
+        output->fb_fd = 0;
+        close(output->fb_fd);
     }
-
-    for (i = 0; i < sprd_data->plane_res->count_planes; i++)
-    {
-        tdm_sprd_output_data *output_data;
-        tdm_sprd_layer_data *layer_data;
-        drmModePlanePtr plane;
-
-        plane = drmModeGetPlane(sprd_data->drm_fd, sprd_data->plane_res->planes[i]);
-        if (!plane)
-        {
-            TDM_ERR("no plane");
-            continue;
-        }
-
-        layer_data = calloc(1, sizeof(tdm_sprd_layer_data));
-        if (!layer_data)
-        {
-            TDM_ERR("alloc failed");
-            drmModeFreePlane(plane);
-            continue;
-        }
-
-        /* TODO
-         * Currently, kernel doesn give us the correct device infomation.
-         * Primary connector type is invalid. plane's count is not correct.
-         * So we need to fix all of them with kernel.
-         * Temporarily we dedicate only 2 plane to each output.
-         * First plane is primary layer. Second plane's zpos is 1.
-         */
-        if (i % LAYER_COUNT_PER_OUTPUT == 0)
-            find_pipe++;
-
-        LIST_FOR_EACH_ENTRY(output_data, &sprd_data->output_list, link)
-        {
-            if (output_data->pipe == find_pipe)
-                break;
-        }
-
-        if (i == sprd_data->mode_res->count_connectors * LAYER_COUNT_PER_OUTPUT)
-        {
-            TDM_DBG("no more plane(%d) need for outputs", plane->plane_id);
-            drmModeFreePlane(plane);
-            free(layer_data);
-            return TDM_ERROR_NONE;
-        }
-
-        layer_data->sprd_data = sprd_data;
-        layer_data->output_data = output_data;
-        layer_data->plane_id = sprd_data->plane_res->planes[i];
-
-        layer_data->zpos = i % 2;
-        if (layer_data->zpos == 0)
-        {
-            layer_data->capabilities = TDM_LAYER_CAPABILITY_PRIMARY | TDM_LAYER_CAPABILITY_GRAPHIC;
-            output_data->primary_layer = layer_data;
-        }
-        else
-        {
-            tdm_error ret;
-
-            layer_data->capabilities = TDM_LAYER_CAPABILITY_OVERLAY | TDM_LAYER_CAPABILITY_GRAPHIC;
-
-            ret = tdm_sprd_display_set_property(sprd_data, layer_data->plane_id,
-                                                  DRM_MODE_OBJECT_PLANE, "zpos", layer_data->zpos);
-            if (ret != TDM_ERROR_NONE)
-            {
-                drmModeFreePlane(plane);
-                free(layer_data);
-                return TDM_ERROR_OPERATION_FAILED;
-            }
-        }
-
-        TDM_DBG("layer_data(%p) plane_id(%d) crtc_id(%d) zpos(%d) capabilities(%x)",
-                layer_data, layer_data->plane_id, layer_data->output_data->crtc_id,
-                layer_data->zpos, layer_data->capabilities);
-
-        LIST_ADDTAIL(&layer_data->link, &output_data->layer_list);
-
-        drmModeFreePlane(plane);
-    }
-
-    return TDM_ERROR_NONE;
+    output->dpms_value = TDM_OUTPUT_DPMS_OFF;
+    output->status = TDM_OUTPUT_CONN_STATUS_DISCONNECTED;
+    return TDM_ERROR_OPERATION_FAILED;
 }
 
 static void
@@ -826,7 +647,6 @@ _tdm_sprd_display_cb_destroy_buffer(tdm_buffer *buffer, void *user_data)
 {
     tdm_sprd_data *sprd_data;
     tdm_sprd_display_buffer *display_buffer;
-    int ret;
 
     if (!user_data)
     {
@@ -849,49 +669,59 @@ _tdm_sprd_display_cb_destroy_buffer(tdm_buffer *buffer, void *user_data)
     }
     LIST_DEL(&display_buffer->link);
 
-    if (display_buffer->fb_id > 0)
-    {
-        ret = drmModeRmFB(sprd_data->drm_fd, display_buffer->fb_id);
-        if (ret < 0)
-        {
-            TDM_ERR("rm fb failed");
-            return;
-        }
-        TDM_DBG("drmModeRmFB success!!! fb_id:%d", display_buffer->fb_id);
-    }
-    else
-        TDM_DBG("drmModeRmFB not called fb_id:%d", display_buffer->fb_id);
-
     free(display_buffer);
 }
 
-tdm_error
-tdm_sprd_display_create_layer_list(tdm_sprd_data *sprd_data)
+tdm_sprd_output_data *
+_tdm_sprd_display_create_output_LCD(tdm_sprd_data *sprd_data)
 {
     tdm_sprd_output_data *output_data;
-    tdm_error ret;
 
-    if (!sprd_data->has_zpos_info)
-        ret = _tdm_sprd_display_create_layer_list_type(sprd_data);
-    else if (sprd_data->is_immutable_zpos)
-        ret = _tdm_sprd_display_create_layer_list_immutable_zpos(sprd_data);
-    else
-        ret = _tdm_sprd_display_create_layer_list_not_fixed(sprd_data);
-
-    if (ret != TDM_ERROR_NONE)
-        return ret;
-
-    LIST_FOR_EACH_ENTRY(output_data, &sprd_data->output_list, link)
+    output_data = calloc (1, sizeof(tdm_sprd_output_data));
+    if (!output_data)
     {
-        if (!output_data->primary_layer)
-        {
-            TDM_ERR("output(%d) no primary layer", output_data->pipe);
-            return TDM_ERROR_OPERATION_FAILED;
-        }
+        TDM_ERR("alloc failed");
+        return NULL;
     }
 
-    return TDM_ERROR_NONE;
+    output_data->sprd_data = sprd_data;
+    output_data->pipe = 1;
+    output_data->connector_type = TDM_OUTPUT_TYPE_LVDS;
+    output_data->count_modes = 0;
+    output_data->fb_fd_name = FB_DEV_LCD;
+    LIST_INITHEAD(&output_data->layer_list);
+
+    _tdm_sprd_display_output_update (output_data);
+
+    if (output_data->status == TDM_OUTPUT_CONN_STATUS_CONNECTED)
+    {
+        //LCD has only one mode
+        output_data->count_modes = 1;
+        output_data->output_modes = calloc (output_data->count_modes, sizeof(tdm_output_mode));
+        if (!output_data->output_modes)
+        {
+            TDM_ERR("alloc failed");
+            free (output_data);
+            goto failed_create;
+        }
+        _tdm_sprd_display_to_tdm_mode (&output_data->mi, &output_data->output_modes[0]);
+    }
+
+    TDM_DBG("output(%p, status:%d type:%d-%d) pipe(%d) dpms(%d)", output_data, output_data->status,
+            output_data->connector_type, output_data->connector_type_id, output_data->pipe, output_data->dpms_value);
+
+    _tdm_sprd_display_create_layer_list_LCD(output_data);
+
+
+    return output_data;
+failed_create:
+
+    if (output_data->output_modes)
+        free(output_data->output_modes);
+
+    return NULL;
 }
+
 
 void
 tdm_sprd_display_destroy_output_list(tdm_sprd_data *sprd_data)
@@ -913,246 +743,27 @@ tdm_sprd_display_destroy_output_list(tdm_sprd_data *sprd_data)
                 free(l);
             }
         }
-        free(o->drm_modes);
         free(o->output_modes);
         free(o);
     }
 }
 
 tdm_error
-tdm_sprd_display_create_output_list(tdm_sprd_data *sprd_data)
+tdm_sprd_display_create_output_list (tdm_sprd_data *sprd_data)
 {
-    tdm_sprd_output_data *output_data;
-    int i;
-    tdm_error ret;
-    int allocated = 0;
+    tdm_sprd_output_data *output_data = NULL;
 
     RETURN_VAL_IF_FAIL(LIST_IS_EMPTY(&sprd_data->output_list), TDM_ERROR_OPERATION_FAILED);
 
-    for (i = 0; i < sprd_data->mode_res->count_connectors; i++)
-    {
-        drmModeConnectorPtr connector;
-        drmModeEncoderPtr encoder;
-        int crtc_id = 0, c, j;
+    //have only LCD output
+    output_data = _tdm_sprd_display_create_output_LCD(sprd_data);
+    RETURN_VAL_IF_FAIL(output_data, TDM_ERROR_OPERATION_FAILED);
+    LIST_ADDTAIL(&output_data->link, &sprd_data->output_list);
+    sprd_data->output_count = 1;
 
-        connector = drmModeGetConnector(sprd_data->drm_fd, sprd_data->mode_res->connectors[i]);
-        if (!connector)
-        {
-            TDM_ERR("no connector");
-            ret = TDM_ERROR_OPERATION_FAILED;
-            goto failed_create;
-        }
-
-        if (connector->count_encoders != 1)
-        {
-            TDM_ERR("too many encoders: %d", connector->count_encoders);
-            drmModeFreeConnector(connector);
-            ret = TDM_ERROR_OPERATION_FAILED;
-            goto failed_create;
-        }
-
-        encoder = drmModeGetEncoder(sprd_data->drm_fd, connector->encoders[0]);
-        if (!encoder)
-        {
-            TDM_ERR("no encoder");
-            drmModeFreeConnector(connector);
-            ret = TDM_ERROR_OPERATION_FAILED;
-            goto failed_create;
-        }
-
-        for (c = 0; c < sprd_data->mode_res->count_crtcs; c++)
-        {
-            if (allocated & (1 << c))
-                continue;
-
-            if ((encoder->possible_crtcs & (1 << c)) == 0)
-                continue;
-
-            crtc_id = sprd_data->mode_res->crtcs[c];
-            allocated |= (1 << c);
-            break;
-        }
-
-        if (crtc_id == 0)
-        {
-            TDM_ERR("no possible crtc");
-            drmModeFreeConnector(connector);
-            ret = TDM_ERROR_OPERATION_FAILED;
-            goto failed_create;
-        }
-
-        output_data = calloc(1, sizeof(tdm_sprd_output_data));
-        if (!output_data)
-        {
-            TDM_ERR("alloc failed");
-            drmModeFreeConnector(connector);
-            drmModeFreeEncoder(encoder);
-            ret = TDM_ERROR_OUT_OF_MEMORY;
-            goto failed_create;
-        }
-
-        LIST_INITHEAD(&output_data->layer_list);
-
-        output_data->sprd_data = sprd_data;
-        output_data->connector_id = sprd_data->mode_res->connectors[i];
-        output_data->encoder_id = encoder->encoder_id;
-        output_data->crtc_id = crtc_id;
-        output_data->pipe = c;
-        output_data->connector_type = connector->connector_type;
-        output_data->connector_type_id = connector->connector_type_id;
-
-        if (connector->connection == DRM_MODE_CONNECTED)
-            output_data->status = TDM_OUTPUT_CONN_STATUS_CONNECTED;
-        else
-            output_data->status = TDM_OUTPUT_CONN_STATUS_DISCONNECTED;
-
-        for (j = 0; j < connector->count_props; j++)
-        {
-            drmModePropertyPtr prop = drmModeGetProperty(sprd_data->drm_fd, connector->props[i]);
-            if (!prop)
-                continue;
-            if (!strcmp(prop->name, "DPMS"))
-            {
-                output_data->dpms_prop_id = connector->props[i];
-                drmModeFreeProperty(prop);
-                break;
-            }
-            drmModeFreeProperty(prop);
-        }
-
-        output_data->count_modes = connector->count_modes;
-        output_data->drm_modes = calloc(connector->count_modes, sizeof(drmModeModeInfo));
-        if (!output_data->drm_modes)
-        {
-            TDM_ERR("alloc failed");
-            free(output_data);
-            drmModeFreeConnector(connector);
-            drmModeFreeEncoder(encoder);
-            ret = TDM_ERROR_OUT_OF_MEMORY;
-            goto failed_create;
-        }
-        output_data->output_modes = calloc(connector->count_modes, sizeof(tdm_output_mode));
-        if (!output_data->output_modes)
-        {
-            TDM_ERR("alloc failed");
-            free(output_data);
-            free(output_data->drm_modes);
-            drmModeFreeConnector(connector);
-            drmModeFreeEncoder(encoder);
-            ret = TDM_ERROR_OUT_OF_MEMORY;
-            goto failed_create;
-        }
-        for (j = 0; j < connector->count_modes; j++)
-        {
-            output_data->drm_modes[j] = connector->modes[j];
-            _tdm_sprd_display_to_tdm_mode(&output_data->drm_modes[j], &output_data->output_modes[j]);
-        }
-
-        LIST_ADDTAIL(&output_data->link, &sprd_data->output_list);
-
-        TDM_DBG("output_data(%p) connector_id(%d:%d:%d-%d) encoder_id(%d) crtc_id(%d) pipe(%d) dpms_id(%d)",
-                output_data, output_data->connector_id, output_data->status, output_data->connector_type,
-                output_data->connector_type_id, output_data->encoder_id, output_data->crtc_id,
-                output_data->pipe, output_data->dpms_prop_id);
-
-        drmModeFreeEncoder(encoder);
-        drmModeFreeConnector(connector);
-    }
-
-    TDM_DBG("output count: %d", sprd_data->mode_res->count_connectors);
+    TDM_DBG("output count: %d", sprd_data->output_count);
 
     return TDM_ERROR_NONE;
-failed_create:
-    tdm_sprd_display_destroy_output_list(sprd_data);
-    return ret;
-}
-
-tdm_error
-tdm_sprd_display_set_property(tdm_sprd_data *sprd_data,
-                                unsigned int obj_id, unsigned int obj_type,
-                                const char *name, unsigned int value)
-{
-    drmModeObjectPropertiesPtr props = NULL;
-    unsigned int i;
-
-    props = drmModeObjectGetProperties(sprd_data->drm_fd, obj_id, obj_type);
-    if (!props)
-    {
-        TDM_ERR("drmModeObjectGetProperties failed: %m");
-        return TDM_ERROR_OPERATION_FAILED;
-    }
-    for (i = 0; i < props->count_props; i++)
-    {
-        drmModePropertyPtr prop = drmModeGetProperty(sprd_data->drm_fd, props->props[i]);
-        int ret;
-        if (!prop)
-        {
-            TDM_ERR("drmModeGetProperty failed: %m");
-            drmModeFreeObjectProperties(props);
-            return TDM_ERROR_OPERATION_FAILED;
-        }
-        if (!strcmp(prop->name, name))
-        {
-            ret = drmModeObjectSetProperty(sprd_data->drm_fd, obj_id, obj_type, prop->prop_id, value);
-            if (ret < 0)
-            {
-                TDM_ERR("drmModeObjectSetProperty failed: %m");
-                drmModeFreeProperty(prop);
-                drmModeFreeObjectProperties(props);
-                return TDM_ERROR_OPERATION_FAILED;
-            }
-            drmModeFreeProperty(prop);
-            drmModeFreeObjectProperties(props);
-            return TDM_ERROR_NONE;
-        }
-        drmModeFreeProperty(prop);
-    }
-
-    TDM_ERR("not found '%s' property", name);
-
-    drmModeFreeObjectProperties(props);
-    /* TODO
-    * kernel info error
-    * it must be changed to 'return TDM_ERROR_OPERATION_FAILED' after kernel fix.
-    */
-    return TDM_ERROR_NONE;
-}
-
-tdm_error
-tdm_sprd_display_get_property(tdm_sprd_data *sprd_data,
-                                unsigned int obj_id, unsigned int obj_type,
-                                const char *name, unsigned int *value, int *is_immutable)
-{
-    drmModeObjectPropertiesPtr props = NULL;
-    int i;
-
-    props = drmModeObjectGetProperties(sprd_data->drm_fd, obj_id, obj_type);
-    if (!props)
-        return TDM_ERROR_OPERATION_FAILED;
-
-    for (i = 0; i < props->count_props; i++)
-    {
-        drmModePropertyPtr prop = drmModeGetProperty(sprd_data->drm_fd, props->props[i]);
-
-        if (!prop)
-            continue;
-
-        if (!strcmp(prop->name, name))
-        {
-            if (is_immutable)
-                *is_immutable = prop->flags & DRM_MODE_PROP_IMMUTABLE;
-            if (value)
-                *value = (unsigned int)props->prop_values[i];
-            drmModeFreeProperty(prop);
-            drmModeFreeObjectProperties(props);
-            return TDM_ERROR_NONE;
-        }
-
-        drmModeFreeProperty(prop);
-    }
-    drmModeFreeObjectProperties(props);
-    TDM_DBG("coundn't find '%s' property", name);
-    return TDM_ERROR_OPERATION_FAILED;
 }
 
 tdm_error
@@ -1292,10 +903,6 @@ tdm_error
 sprd_output_get_capability(tdm_output *output, tdm_caps_output *caps)
 {
     tdm_sprd_output_data *output_data = output;
-    tdm_sprd_data *sprd_data;
-    drmModeConnectorPtr connector = NULL;
-    drmModeCrtcPtr crtc = NULL;
-    drmModeObjectPropertiesPtr props = NULL;
     int i;
     tdm_error ret;
 
@@ -1304,16 +911,11 @@ sprd_output_get_capability(tdm_output *output, tdm_caps_output *caps)
 
     memset(caps, 0, sizeof(tdm_caps_output));
 
-    sprd_data = output_data->sprd_data;
-
     caps->status = output_data->status;
     caps->type = output_data->connector_type;
     caps->type_id = output_data->connector_type_id;
 
-    connector = drmModeGetConnector(sprd_data->drm_fd, output_data->connector_id);
-    RETURN_VAL_IF_FAIL(connector, TDM_ERROR_OPERATION_FAILED);
-
-    caps->mode_count = connector->count_modes;
+    caps->mode_count = output_data->count_modes;
     caps->modes = calloc(1, sizeof(tdm_output_mode) * caps->mode_count);
     if (!caps->modes)
     {
@@ -1324,62 +926,25 @@ sprd_output_get_capability(tdm_output *output, tdm_caps_output *caps)
     for (i = 0; i < caps->mode_count; i++)
         caps->modes[i] = output_data->output_modes[i];
 
-    caps->mmWidth = connector->mmWidth;
-    caps->mmHeight = connector->mmHeight;
-    caps->subpixel = connector->subpixel;
+    caps->mmWidth = output_data->mi.width;
+    caps->mmHeight = output_data->mi.height;
+    caps->subpixel = 0;
 
-    caps->min_w = sprd_data->mode_res->min_width;
-    caps->min_h = sprd_data->mode_res->min_height;
-    caps->max_w = sprd_data->mode_res->max_width;
-    caps->max_h = sprd_data->mode_res->max_height;
+    caps->min_w = 0;
+    caps->min_h = 0;
+    caps->max_w = output_data->mi.xres_virtual;
+    caps->max_h = output_data->mi.yres_virtual;
     caps->preferred_align = -1;
 
-    crtc = drmModeGetCrtc(sprd_data->drm_fd, output_data->crtc_id);
-    if (!crtc)
-    {
-        ret = TDM_ERROR_OPERATION_FAILED;
-        TDM_ERR("get crtc failed: %m\n");
-        goto failed_get;
-    }
-
-    props = drmModeObjectGetProperties(sprd_data->drm_fd, output_data->crtc_id, DRM_MODE_OBJECT_CRTC);
-    if (!props)
-    {
-        ret = TDM_ERROR_OPERATION_FAILED;
-        TDM_ERR("get crtc properties failed: %m\n");
-        goto failed_get;
-    }
-
-    caps->prop_count = props->count_props;
-    caps->props = calloc(1, sizeof(tdm_prop) * caps->prop_count);
-    if (!caps->props)
-    {
-        ret = TDM_ERROR_OUT_OF_MEMORY;
-        TDM_ERR("alloc failed\n");
-        goto failed_get;
-    }
-
-    for (i = 0; i < caps->prop_count; i++)
-    {
-        drmModePropertyPtr prop = drmModeGetProperty(sprd_data->drm_fd, props->props[i]);
-        if (!prop)
-            continue;
-        snprintf(caps->props[i].name, TDM_NAME_LEN, "%s", prop->name);
-        caps->props[i].id = props->props[i];
-        drmModeFreeProperty(prop);
-    }
-
-    drmModeFreeObjectProperties(props);
-    drmModeFreeCrtc(crtc);
-    drmModeFreeConnector(connector);
+    caps->prop_count = 0;
+    caps->props = NULL;
 
     return TDM_ERROR_NONE;
 failed_get:
-    drmModeFreeCrtc(crtc);
-    drmModeFreeObjectProperties(props);
-    drmModeFreeConnector(connector);
-    free(caps->modes);
-    free(caps->props);
+    if (caps->modes)
+        free(caps->modes);
+    if (caps->props)
+        free(caps->props);
     memset(caps, 0, sizeof(tdm_caps_output));
     return ret;
 }
@@ -1433,56 +998,13 @@ failed_get:
 tdm_error
 sprd_output_set_property(tdm_output *output, unsigned int id, tdm_value value)
 {
-    tdm_sprd_output_data *output_data = output;
-    tdm_sprd_data *sprd_data;
-    int ret;
-
-    RETURN_VAL_IF_FAIL(output_data, TDM_ERROR_INVALID_PARAMETER);
-    RETURN_VAL_IF_FAIL(output_data->crtc_id > 0, TDM_ERROR_INVALID_PARAMETER);
-
-    sprd_data = output_data->sprd_data;
-    ret = drmModeObjectSetProperty(sprd_data->drm_fd,
-                                   output_data->crtc_id, DRM_MODE_OBJECT_CRTC,
-                                   id, value.u32);
-    if (ret < 0)
-    {
-        TDM_ERR("set property failed: %m");
-        return TDM_ERROR_OPERATION_FAILED;
-    }
-
-    return TDM_ERROR_NONE;
+    return TDM_ERROR_NOT_IMPLEMENTED;
 }
 
 tdm_error
 sprd_output_get_property(tdm_output *output, unsigned int id, tdm_value *value)
 {
-    tdm_sprd_output_data *output_data = output;
-    tdm_sprd_data *sprd_data;
-    drmModeObjectPropertiesPtr props;
-    int i;
-
-    RETURN_VAL_IF_FAIL(output_data, TDM_ERROR_INVALID_PARAMETER);
-    RETURN_VAL_IF_FAIL(output_data->crtc_id > 0, TDM_ERROR_INVALID_PARAMETER);
-    RETURN_VAL_IF_FAIL(value, TDM_ERROR_INVALID_PARAMETER);
-
-    sprd_data = output_data->sprd_data;
-    props = drmModeObjectGetProperties(sprd_data->drm_fd, output_data->crtc_id, DRM_MODE_OBJECT_CRTC);
-    if (props == NULL)
-    {
-        TDM_ERR("get property failed: %m");
-        return TDM_ERROR_OPERATION_FAILED;
-    }
-
-    for (i = 0; i < props->count_props; i++)
-        if (props->props[i] == id)
-        {
-            (*value).u32 = (uint)props->prop_values[i];
-            break;
-        }
-
-    drmModeFreeObjectProperties(props);
-
-    return TDM_ERROR_NONE;
+    return TDM_ERROR_NOT_IMPLEMENTED;
 }
 
 tdm_error
@@ -1541,62 +1063,36 @@ sprd_output_commit(tdm_output *output, int sync, void *user_data)
 {
     tdm_sprd_output_data *output_data = output;
     tdm_sprd_data *sprd_data;
-    tdm_sprd_layer_data *layer_data;
     tdm_error ret;
+    uint target_msc;
 
     RETURN_VAL_IF_FAIL(output_data, TDM_ERROR_INVALID_PARAMETER);
 
+    //TODO: check flag sync
+
     sprd_data = output_data->sprd_data;
 
-    LIST_FOR_EACH_ENTRY(layer_data, &output_data->layer_list, link)
+    tdm_sprd_vblank_data *vblank_data = calloc (1, sizeof(tdm_sprd_vblank_data));
+
+    if (!vblank_data)
     {
-        if (layer_data == output_data->primary_layer)
-        {
-            ret = _tdm_sprd_display_commit_primary_layer(layer_data);
-            if (ret != TDM_ERROR_NONE)
-                return ret;
-        }
-        else
-        {
-            ret = _tdm_sprd_display_commit_layer(layer_data);
-            if (ret != TDM_ERROR_NONE)
-                return ret;
-        }
+        TDM_ERR("alloc failed");
+        return TDM_ERROR_OUT_OF_MEMORY;
     }
 
-    if (tdm_helper_drm_fd == -1)
+    vblank_data->type = VBLANK_TYPE_COMMIT;
+    vblank_data->output_data = output_data;
+    vblank_data->user_data = user_data;
+
+    target_msc++;
+    ret = _tdm_sprd_display_wait_vblank (sprd_data->drm_fd, 0, &target_msc, vblank_data);
+    if (ret != TDM_ERROR_NONE)
     {
-        tdm_sprd_vblank_data *vblank_data = calloc(1, sizeof(tdm_sprd_vblank_data));
-        uint target_msc;
-
-        if (!vblank_data)
-        {
-            TDM_ERR("alloc failed");
-            return TDM_ERROR_OUT_OF_MEMORY;
-        }
-
-        ret = _tdm_sprd_display_get_cur_msc(sprd_data->drm_fd, output_data->pipe, &target_msc);
-        if (ret != TDM_ERROR_NONE)
-        {
-            free(vblank_data);
-            return ret;
-        }
-
-        target_msc++;
-
-        vblank_data->type = VBLANK_TYPE_COMMIT;
-        vblank_data->output_data = output_data;
-        vblank_data->user_data = user_data;
-
-        ret = _tdm_sprd_display_wait_vblank(sprd_data->drm_fd, output_data->pipe, &target_msc, vblank_data);
-        if (ret != TDM_ERROR_NONE)
-        {
-            free(vblank_data);
-            return ret;
-        }
+        free (vblank_data);
+        return ret;
     }
-
-    return TDM_ERROR_NONE;
+    
+    return ret;
 }
 
 tdm_error
@@ -1616,51 +1112,37 @@ tdm_error
 sprd_output_set_dpms(tdm_output *output, tdm_output_dpms dpms_value)
 {
     tdm_sprd_output_data *output_data = output;
-    tdm_sprd_data *sprd_data;
-    int ret;
+    tdm_error ret;
 
-    RETURN_VAL_IF_FAIL(output_data, TDM_ERROR_INVALID_PARAMETER);
-
-    sprd_data = output_data->sprd_data;
-    ret = drmModeObjectSetProperty(sprd_data->drm_fd,
-                                   output_data->connector_id, DRM_MODE_OBJECT_CONNECTOR,
-                                   output_data->dpms_prop_id, dpms_value);
-    if (ret < 0)
+    if (output_data->dpms_value == dpms_value)
     {
-        TDM_ERR("set dpms failed: %m");
-        return TDM_ERROR_OPERATION_FAILED;
+        return TDM_ERROR_NONE;
     }
 
-    return TDM_ERROR_NONE;
+    output_data->dpms_value = dpms_value;
+
+    if (dpms_value == TDM_OUTPUT_DPMS_OFF)
+    {
+        ret = _tdm_sprd_display_output_disable(output_data);
+    }
+    else
+    {
+        ret = _tdm_sprd_display_output_enable(output_data);
+    }
+    return ret;
 }
 
 tdm_error
 sprd_output_get_dpms(tdm_output *output, tdm_output_dpms *dpms_value)
 {
-    tdm_sprd_output_data *output_data = output;
-    tdm_sprd_data *sprd_data;
-    drmModeObjectPropertiesPtr props;
-    int i;
-
-    RETURN_VAL_IF_FAIL(output_data, TDM_ERROR_INVALID_PARAMETER);
+    RETURN_VAL_IF_FAIL(output, TDM_ERROR_INVALID_PARAMETER);
     RETURN_VAL_IF_FAIL(dpms_value, TDM_ERROR_INVALID_PARAMETER);
 
-    sprd_data = output_data->sprd_data;
-    props = drmModeObjectGetProperties(sprd_data->drm_fd, output_data->connector_id, DRM_MODE_OBJECT_CONNECTOR);
-    if (props == NULL)
-    {
-        TDM_ERR("get property failed: %m");
-        return TDM_ERROR_OPERATION_FAILED;
-    }
+    tdm_sprd_output_data *output_data = output;
 
-    for (i = 0; i < props->count_props; i++)
-        if (props->props[i] == output_data->dpms_prop_id)
-        {
-            *dpms_value = (uint)props->prop_values[i];
-            break;
-        }
+    RETURN_VAL_IF_FAIL(output_data, TDM_ERROR_INVALID_PARAMETER);
 
-    drmModeFreeObjectProperties(props);
+    *dpms_value = output_data->dpms_value;
 
     return TDM_ERROR_NONE;
 }
@@ -1696,9 +1178,6 @@ tdm_error
 sprd_layer_get_capability(tdm_layer *layer, tdm_caps_layer *caps)
 {
     tdm_sprd_layer_data *layer_data = layer;
-    tdm_sprd_data *sprd_data;
-    drmModePlanePtr plane = NULL;
-    drmModeObjectPropertiesPtr props = NULL;
     int i;
     tdm_error ret;
 
@@ -1707,19 +1186,10 @@ sprd_layer_get_capability(tdm_layer *layer, tdm_caps_layer *caps)
 
     memset(caps, 0, sizeof(tdm_caps_layer));
 
-    sprd_data = layer_data->sprd_data;
-    plane = drmModeGetPlane(sprd_data->drm_fd, layer_data->plane_id);
-    if (!plane)
-    {
-        TDM_ERR("get plane failed: %m");
-        ret = TDM_ERROR_OPERATION_FAILED;
-        goto failed_get;
-    }
-
     caps->capabilities = layer_data->capabilities;
-    caps->zpos = layer_data->zpos;  /* if VIDEO layer, zpos is -1 */
+    caps->zpos = -1;  /* if VIDEO layer, zpos is -1 */
 
-    caps->format_count = plane->count_formats;
+    caps->format_count = layer_data->format_count;
     caps->formats = calloc(1, sizeof(tbm_format) * caps->format_count);
     if (!caps->formats)
     {
@@ -1730,51 +1200,14 @@ sprd_layer_get_capability(tdm_layer *layer, tdm_caps_layer *caps)
 
     for (i = 0; i < caps->format_count; i++)
     {
-        /* TODO: kernel reports wrong formats */
-        if (plane->formats[i] != DRM_FORMAT_XRGB8888 && plane->formats[i] != DRM_FORMAT_ARGB8888)
-           continue;
-        caps->formats[i] = tdm_sprd_format_to_tbm_format(plane->formats[i]);
-    }
-
-    props = drmModeObjectGetProperties(sprd_data->drm_fd, layer_data->plane_id, DRM_MODE_OBJECT_PLANE);
-    if (!props)
-    {
-        ret = TDM_ERROR_OPERATION_FAILED;
-        TDM_ERR("get plane properties failed: %m\n");
-        goto failed_get;
-    }
-
-    caps->props = calloc(1, sizeof(tdm_prop) * props->count_props);
-    if (!caps->props)
-    {
-        ret = TDM_ERROR_OUT_OF_MEMORY;
-        TDM_ERR("alloc failed\n");
-        goto failed_get;
+        caps->formats[i] = tdm_sprd_fb_format_to_tbm_format(layer_data->formats[i]);
     }
 
     caps->prop_count = 0;
-    for (i = 0; i < props->count_props; i++)
-    {
-        drmModePropertyPtr prop = drmModeGetProperty(sprd_data->drm_fd, props->props[i]);
-        if (!prop)
-            continue;
-        if (!strncmp(prop->name, "type", TDM_NAME_LEN))
-            continue;
-        if (!strncmp(prop->name, "zpos", TDM_NAME_LEN))
-            continue;
-        snprintf(caps->props[i].name, TDM_NAME_LEN, "%s", prop->name);
-        caps->props[i].id = props->props[i];
-        caps->prop_count++;
-        drmModeFreeProperty(prop);
-    }
-
-    drmModeFreeObjectProperties(props);
-    drmModeFreePlane(plane);
+    caps->props = NULL;
 
     return TDM_ERROR_NONE;
 failed_get:
-    drmModeFreeObjectProperties(props);
-    drmModeFreePlane(plane);
     free(caps->formats);
     free(caps->props);
     memset(caps, 0, sizeof(tdm_caps_layer));
@@ -1784,57 +1217,13 @@ failed_get:
 tdm_error
 sprd_layer_set_property(tdm_layer *layer, unsigned int id, tdm_value value)
 {
-    tdm_sprd_layer_data *layer_data = layer;
-    tdm_sprd_data *sprd_data;
-    int ret;
-
-    RETURN_VAL_IF_FAIL(layer_data, TDM_ERROR_INVALID_PARAMETER);
-    RETURN_VAL_IF_FAIL(layer_data->plane_id > 0, TDM_ERROR_INVALID_PARAMETER);
-
-    sprd_data = layer_data->sprd_data;
-    ret = drmModeObjectSetProperty(sprd_data->drm_fd,
-                                   layer_data->plane_id, DRM_MODE_OBJECT_PLANE,
-                                   id, value.u32);
-    if (ret < 0)
-    {
-        TDM_ERR("set property failed: %m");
-        return TDM_ERROR_OPERATION_FAILED;
-    }
-
-    return TDM_ERROR_NONE;
+    return TDM_ERROR_NOT_IMPLEMENTED;
 }
 
 tdm_error
 sprd_layer_get_property(tdm_layer *layer, unsigned int id, tdm_value *value)
 {
-    tdm_sprd_layer_data *layer_data = layer;
-    tdm_sprd_data *sprd_data;
-    drmModeObjectPropertiesPtr props;
-    int i;
-
-    RETURN_VAL_IF_FAIL(layer_data, TDM_ERROR_INVALID_PARAMETER);
-    RETURN_VAL_IF_FAIL(layer_data->plane_id > 0, TDM_ERROR_INVALID_PARAMETER);
-    RETURN_VAL_IF_FAIL(value, TDM_ERROR_INVALID_PARAMETER);
-
-    sprd_data = layer_data->sprd_data;
-    props = drmModeObjectGetProperties(sprd_data->drm_fd, layer_data->plane_id,
-                                       DRM_MODE_OBJECT_PLANE);
-    if (props == NULL)
-    {
-        TDM_ERR("get property failed: %m");
-        return TDM_ERROR_OPERATION_FAILED;
-    }
-
-    for (i = 0; i < props->count_props; i++)
-        if (props->props[i] == id)
-        {
-            (*value).u32 = (uint)props->prop_values[i];
-            break;
-        }
-
-    drmModeFreeObjectProperties(props);
-
-    return TDM_ERROR_NONE;
+    return TDM_ERROR_NOT_IMPLEMENTED;
 }
 
 tdm_error
@@ -1872,7 +1261,7 @@ sprd_layer_set_buffer(tdm_layer *layer, tdm_buffer *buffer)
     tdm_sprd_display_buffer *display_buffer;
     tdm_error err = TDM_ERROR_NONE;
     tbm_surface_h surface;
-    int ret, i, count;
+    int i, count;
 
     RETURN_VAL_IF_FAIL(layer_data, TDM_ERROR_INVALID_PARAMETER);
     RETURN_VAL_IF_FAIL(buffer, TDM_ERROR_INVALID_PARAMETER);
@@ -1897,49 +1286,34 @@ sprd_layer_set_buffer(tdm_layer *layer, tdm_buffer *buffer)
             return TDM_ERROR_OPERATION_FAILED;
         }
         LIST_ADDTAIL(&display_buffer->link, &sprd_data->buffer_list);
-    }
 
-    if (display_buffer->fb_id == 0)
-    {
-        unsigned int width;
-        unsigned int height;
-        unsigned int format;
-        unsigned int handles[4] = {0,};
-        unsigned int pitches[4] = {0,};
-        unsigned int offsets[4] = {0,};
-        unsigned int size;
-
-        width = tbm_surface_get_width(surface);
-        height = tbm_surface_get_height(surface);
-        format = tbm_surface_get_format(surface);
-        count = tbm_surface_internal_get_num_bos(surface);
-        for (i = 0; i < count; i++)
+        display_buffer->width = tbm_surface_get_width(surface);
+        display_buffer->height = tbm_surface_get_height(surface);
+        display_buffer->format = tbm_surface_get_format(surface);
+        display_buffer->count = tbm_surface_internal_get_num_bos(surface);
+        for (i = 0; i < display_buffer->count; i++)
         {
-            tbm_bo bo = tbm_surface_internal_get_bo(surface, i);
-            handles[i] = tbm_bo_get_handle(bo, TBM_DEVICE_DEFAULT).u32;
+            tbm_bo bo = tbm_surface_internal_get_bo (surface, i);
+            display_buffer->handles[i] = tbm_bo_get_handle (bo, TBM_DEVICE_DEFAULT).u32;
+            display_buffer->name[i] = tbm_bo_export(bo);
         }
-        count = tbm_surface_internal_get_num_planes(format);
+        count = tbm_surface_internal_get_num_planes (display_buffer->format);
         for (i = 0; i < count; i++)
-            tbm_surface_internal_get_plane_data(surface, i, &size, &offsets[i], &pitches[i]);
+            tbm_surface_internal_get_plane_data (surface, i, &display_buffer->size, &display_buffer->offsets[i],
+                                                 &display_buffer->pitches[i]);
 
-        ret = drmModeAddFB2(sprd_data->drm_fd, width, height, format,
-                            handles, pitches, offsets, &display_buffer->fb_id, 0);
-        if (ret < 0)
-        {
-            TDM_ERR("add fb failed: %m");
-            return TDM_ERROR_OPERATION_FAILED;
-        }
-
-        if (IS_RGB(format))
-            display_buffer->width = pitches[0] >> 2;
+        if (IS_RGB(display_buffer->format))
+            display_buffer->width = display_buffer->pitches[0] >> 2;
         else
-            display_buffer->width = pitches[0];
+            display_buffer->width = display_buffer->pitches[0];
     }
+
     TDM_DBG("sprd_data->drm_fd : %d, display_buffer->fb_id:%u", sprd_data->drm_fd, display_buffer->fb_id);
     layer_data->display_buffer = display_buffer;
     layer_data->display_buffer_changed = 1;
 
     return TDM_ERROR_NONE;
+
 }
 
 tdm_error
@@ -1985,6 +1359,9 @@ _sprd_drm_vblank_event (int fd, tdm_sprd_data *sprd_data_p, void* hw_event_data)
                                      vblank_data->user_data);
         break;
     case VBLANK_TYPE_COMMIT:
+
+        _tdm_sprd_display_do_commit(output_data);
+
         if (output_data->commit_func)
             output_data->commit_func(output_data, hw_vblank->sequence,
                                      hw_vblank->tv_sec, hw_vblank->tv_usec,

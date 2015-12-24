@@ -8,9 +8,10 @@ ExcludeArch:    i586 x86_64
 Source0:        %{name}-%{version}.tar.gz
 Source1001:     %{name}.manifest
 BuildRequires: pkgconfig(libdrm)
-BuildRequires: pkgconfig(libdrm_sprd)
 BuildRequires: pkgconfig(libudev)
 BuildRequires: pkgconfig(libtdm)
+BuildRequires: kernel-headers-tizen-dev
+BuildConflicts: linux-glibc-devel
 
 %description
 Back-End library of Tizen Display Manager Spreadtrum : libtdm-mgr SPRD library

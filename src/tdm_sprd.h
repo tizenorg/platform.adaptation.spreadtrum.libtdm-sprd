@@ -20,7 +20,7 @@
 #include <tdm_backend.h>
 #include <tdm_log.h>
 #include <tdm_list.h>
-
+#include "sprd_pp_7727.h"
 /* sprd backend functions (display) */
 tdm_error    sprd_display_get_capabilitiy(tdm_backend_data *bdata, tdm_caps_display *caps);
 tdm_error    sprd_display_get_pp_capability(tdm_backend_data *bdata, tdm_caps_pp *caps);
@@ -85,8 +85,11 @@ tdm_error    sprd_pp_set_done_handler(tdm_pp *pp, tdm_pp_done_handler func, void
     }\
 }
 
+#define RETURN_VOID_IF_FAIL(cond) RETURN_VAL_IF_FAIL(cond,)
+
 typedef struct _tdm_sprd_data
 {
+    struct list_head events_list;
     tdm_display *dpy;
     int drm_fd;
     int fb_fd;
@@ -104,7 +107,6 @@ typedef struct _tdm_sprd_data
 
     drmModeResPtr mode_res;
     drmModePlaneResPtr plane_res;
-
     struct list_head output_list;
     struct list_head buffer_list;
 } tdm_sprd_data;
@@ -124,7 +126,7 @@ tdm_error    tdm_sprd_display_get_property(tdm_sprd_data *sprd_data,
 
 tdm_error    tdm_sprd_pp_get_capability(tdm_sprd_data *sprd_data, tdm_caps_pp *caps);
 tdm_pp*      tdm_sprd_pp_create(tdm_sprd_data *sprd_data, tdm_error *error);
-void         tdm_sprd_pp_handler(unsigned int prop_id, unsigned int *buf_idx,
-                                   unsigned int tv_sec, unsigned int tv_usec, void *data);
-
+void         tdm_sprd_pp_handler(int fd, tdm_sprd_data *sprd_data_p, void* hw_event_data);
+tdm_error   tdm_sprd_display_create_event_list(tdm_sprd_data *sprd_data);
+void        tdm_sprd_display_destroy_event_list(tdm_sprd_data *sprd_data);
 #endif /* _TDM_SPRD_H_ */

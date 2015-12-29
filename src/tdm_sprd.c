@@ -11,6 +11,8 @@
 
 #define SPRD_DRM_NAME "sprd"
 
+#define USE_TDM_HELPER_DFM_FD 1
+
 static tdm_func_display sprd_func_display =
 {
     sprd_display_get_capabilitiy,
@@ -139,21 +141,18 @@ close_l:
 
     return fd;
 }
-#if 0
+#ifdef USE_TDM_HELPER_DFM_FD
 static int
 _tdm_sprd_drm_user_handler(struct drm_event *event)
 {
-    struct drm_sprd_ipp_event *ipp;
+    RETURN_VAL_IF_FAIL(event, -1);
 
-    if (event->type != DRM_EXYNOS_IPP_EVENT)
+    TDM_DBG("got event %d\n", event->type);
+
+    if (event->type != DRM_SPRD_IPP_EVENT)
         return -1;
 
-    TDM_DBG("got ipp event");
-
-    ipp = (struct drm_sprd_ipp_event *)event;
-
-    tdm_sprd_pp_handler(ipp->prop_id, ipp->buf_id, ipp->tv_sec, ipp->tv_usec,
-                          (void *)(unsigned long)ipp->user_data);
+    tdm_sprd_pp_handler(-1, NULL, event);
 
     return 0;
 }
@@ -165,7 +164,7 @@ tdm_sprd_deinit(tdm_backend_data *bdata)
         return;
 
     TDM_INFO("deinit");
-#if 0
+#ifdef USE_TDM_HELPER_DFM_FD
     drmRemoveUserHandler(tdm_helper_drm_fd, _tdm_sprd_drm_user_handler);
 #endif
     tdm_sprd_display_destroy_output_list(sprd_data);
@@ -220,7 +219,7 @@ tdm_sprd_init(tdm_display *dpy, tdm_error *error)
     sprd_data->dpy = dpy;
     sprd_data->drm_fd = -1;
 
-#if 0
+#ifdef USE_TDM_HELPER_DFM_FD
     /* TODO: tdm_helper_drm_fd is external drm_fd which is opened by ecore_drm.
      * This is very tricky. But we can't remove tdm_helper_drm_fd now because
      * ecore_drm doesn't use tdm yet. When we make ecore_drm use tdm,

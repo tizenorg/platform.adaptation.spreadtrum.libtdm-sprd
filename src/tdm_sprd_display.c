@@ -123,9 +123,9 @@ typedef struct _Drm_Event_Context
 tbm_format img_layer_formats[] = {
         TBM_FORMAT_RGB565,
         TBM_FORMAT_XRGB8888,
-        TBM_FORMAT_ARGB8888,
-        TBM_FORMAT_NV12,
-        TBM_FORMAT_YUV420
+        TBM_FORMAT_ARGB8888
+//        TBM_FORMAT_NV12,
+//        TBM_FORMAT_YUV420
 };
 
 tbm_format osd_layer_formats[] = {

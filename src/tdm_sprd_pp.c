@@ -227,7 +227,6 @@ _tdm_sprd_pp_cmd(tdm_sprd_pp_data *pp_data, enum drm_sprd_ipp_ctrl cmd)
 void
 tdm_sprd_pp_handler(int fd, tdm_sprd_data *sprd_data_p, void* hw_event_data_p)
 {
-    RETURN_VOID_IF_FAIL(sprd_data_p);
     RETURN_VOID_IF_FAIL(hw_event_data_p);
     struct drm_sprd_ipp_event *hw_ipp_p = (struct drm_sprd_ipp_event *) hw_event_data_p;
     tdm_sprd_pp_data *found = NULL, *pp_data = (tdm_sprd_pp_data *)(unsigned long) hw_ipp_p->user_data;
@@ -246,6 +245,11 @@ tdm_sprd_pp_handler(int fd, tdm_sprd_data *sprd_data_p, void* hw_event_data_p)
     }
     if (!found)
         return;
+
+    if (sprd_data_p == NULL) {
+        sprd_data_p = pp_data->sprd_data;
+    }
+    RETURN_VOID_IF_FAIL(sprd_data_p);
 
     TDM_DBG("pp_data(%p) index(%d, %d)", pp_data, hw_ipp_p->buf_id[0], hw_ipp_p->buf_id[1]);
 

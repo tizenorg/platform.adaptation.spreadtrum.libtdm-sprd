@@ -59,6 +59,9 @@ static tbm_format *pp_formats = NULL;
 static int pp_list_init;
 static struct list_head pp_list;
 
+int tdm_debug = 1;
+
+
 static int
 _get_index(tdm_sprd_pp_data *pp_data)
 {
@@ -199,7 +202,7 @@ _tdm_sprd_pp_queue(tdm_sprd_pp_data *pp_data, tdm_sprd_pp_buffer *buffer, enum d
     return TDM_ERROR_NONE;
 }
 #endif
-#if 1 
+#if 1
 static tdm_error
 _tdm_sprd_pp_cmd(tdm_sprd_pp_data *pp_data, enum drm_sprd_ipp_ctrl cmd)
 {

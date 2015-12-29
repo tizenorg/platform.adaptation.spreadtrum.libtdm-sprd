@@ -123,9 +123,9 @@ typedef struct _Drm_Event_Context
 tbm_format img_layer_formats[] = {
         TBM_FORMAT_RGB565,
         TBM_FORMAT_XRGB8888,
-        TBM_FORMAT_ARGB8888,
-        TBM_FORMAT_NV12,
-        TBM_FORMAT_YUV420
+        TBM_FORMAT_ARGB8888
+//        TBM_FORMAT_NV12,
+//        TBM_FORMAT_YUV420
 };
 
 tbm_format osd_layer_formats[] = {
@@ -458,7 +458,7 @@ _tdm_sprd_display_do_commit(tdm_sprd_output_data *output_data)
                 TDM_WRN("Unsupported format\n");
             }
 
-            ovi.size.hsize = layer_data->display_buffer->pitches[0] / 4;
+            ovi.size.hsize = layer_data->display_buffer->width;
             ovi.size.vsize = layer_data->display_buffer->height;
 
             ovi.rect.x = layer_data->info.dst_pos.x;
@@ -1359,16 +1359,25 @@ sprd_layer_set_buffer(tdm_layer *layer, tbm_surface_h surface)
         display_buffer->height = tbm_surface_get_height(surface);
         display_buffer->format = tbm_surface_get_format(surface);
         display_buffer->count = tbm_surface_internal_get_num_bos(surface);
+        count = tbm_surface_internal_get_num_planes (display_buffer->format);
+        TDM_DBG("set buffer layer(%d): %dx%d %c%c%c%c bo_num:%d plane_num:%d", layer_data->capabilities,
+                display_buffer->width, display_buffer->height, FOURCC_STR(display_buffer->format), display_buffer->count, count);
+
         for (i = 0; i < display_buffer->count; i++)
         {
             tbm_bo bo = tbm_surface_internal_get_bo (surface, i);
             display_buffer->handles[i] = tbm_bo_get_handle (bo, TBM_DEVICE_DEFAULT).u32;
             display_buffer->name[i] = tbm_bo_export(bo);
+            TDM_DBG("    set buffer layer(%d): bo%d(name:%d handle:%d)",layer_data->capabilities,
+                    i, display_buffer->name[i], display_buffer->handles[i]);
         }
-        count = tbm_surface_internal_get_num_planes (display_buffer->format);
-        for (i = 0; i < count; i++)
+        for (i = 0; i < count; i++) {
             tbm_surface_internal_get_plane_data (surface, i, &display_buffer->size, &display_buffer->offsets[i],
                                                  &display_buffer->pitches[i]);
+            TDM_DBG("    set buffer layer(%d): plane%d(size:%d offset:%d pitch:%d)",layer_data->capabilities,
+                    i, display_buffer->size, display_buffer->offsets[i], display_buffer->pitches[i]);
+
+        }
 
         if (IS_RGB(display_buffer->format))
             display_buffer->width = display_buffer->pitches[0] >> 2;
@@ -1376,7 +1385,6 @@ sprd_layer_set_buffer(tdm_layer *layer, tbm_surface_h surface)
             display_buffer->width = display_buffer->pitches[0];
     }
 
-    TDM_DBG("sprd_data->drm_fd : %d, display_buffer->fb_id:%u", sprd_data->drm_fd, display_buffer->fb_id);
     layer_data->display_buffer = display_buffer;
     layer_data->display_buffer_changed = 1;
 

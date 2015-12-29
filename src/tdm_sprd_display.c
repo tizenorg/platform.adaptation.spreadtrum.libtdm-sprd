@@ -123,9 +123,9 @@ typedef struct _Drm_Event_Context
 tbm_format img_layer_formats[] = {
         TBM_FORMAT_RGB565,
         TBM_FORMAT_XRGB8888,
-        TBM_FORMAT_ARGB8888,
-        TBM_FORMAT_NV12,
-        TBM_FORMAT_YUV420
+        TBM_FORMAT_ARGB8888
+//        TBM_FORMAT_NV12,
+//        TBM_FORMAT_YUV420
 };
 
 tbm_format osd_layer_formats[] = {
@@ -415,6 +415,8 @@ _tdm_sprd_display_do_commit(tdm_sprd_output_data *output_data)
     overlay_info ovi;
     overlay_display ov_disp = {0,};
     int layer_index;
+    static int enable_layers = 0;
+
 
     RETURN_VAL_IF_FAIL(output_data, TDM_ERROR_OPERATION_FAILED);
 
@@ -445,20 +447,30 @@ _tdm_sprd_display_do_commit(tdm_sprd_output_data *output_data)
 
         if(layer_data->display_buffer)
         {
-            ovi.layer_index = layer_index;
-            ov_disp.layer_index |= layer_index;
+            tbm_format frmt = layer_data->display_buffer->format;
 
-            //TODO:: support differet formats
-            if(_tdm_sprd_tbmformat_to_sprdformat(layer_data->info.src_config.format, &ovi) != TDM_ERROR_NONE)
+            if (frmt != layer_data->info.src_config.format)
+            {
+                TDM_ERR("layer  format %x %c%c%c%c\n", layer_data->info.src_config.format, FOURCC_STR(layer_data->info.src_config.format));
+                TDM_ERR("buffer format %x %c%c%c%c\n", frmt, FOURCC_STR(frmt));
+
+                layer_data->info.src_config.format = frmt;
+            }
+
+            if(_tdm_sprd_tbmformat_to_sprdformat(frmt, &ovi) != TDM_ERROR_NONE)
             {
                 ovi.data_type = SPRD_DATA_FORMAT_RGB888;
                 ovi.endian.y = SPRD_DATA_ENDIAN_B0B1B2B3;
                 ovi.endian.u = SPRD_DATA_ENDIAN_B0B1B2B3;
                 ovi.endian.v = SPRD_DATA_ENDIAN_B0B1B2B3;
-                TDM_WRN("Unsupported format\n");
+                TDM_ERR("Unsupported format: %x %c%c%c%c\n", frmt, FOURCC_STR(frmt));
+                continue;
             }
 
-            ovi.size.hsize = layer_data->display_buffer->pitches[0] / 4;
+            ovi.layer_index = layer_index;
+            ov_disp.layer_index |= layer_index;
+
+            ovi.size.hsize = layer_data->display_buffer->width;
             ovi.size.vsize = layer_data->display_buffer->height;
 
             ovi.rect.x = layer_data->info.dst_pos.x;
@@ -490,9 +502,14 @@ _tdm_sprd_display_do_commit(tdm_sprd_output_data *output_data)
         }
         else
         {
-            if (ioctl(layer_data->output_data->fb_fd, SPRD_FB_UNSET_OVERLAY, &layer_index) == -1)
+            if(enable_layers && layer_index)
             {
-                TDM_ERR ("SPRD_FB_UNSET_OVERLAY(%d) error:%s\n", layer_index, strerror (errno));
+                enable_layers &= ~layer_index;
+                TDM_ERR ("SPRD_FB_UNSET_OVERLAY(%d)\n", layer_index);
+                if (ioctl(layer_data->output_data->fb_fd, SPRD_FB_UNSET_OVERLAY, &layer_index) == -1)
+                {
+                    TDM_ERR ("SPRD_FB_UNSET_OVERLAY(%d) error:%s\n", layer_index, strerror (errno));
+                }
             }
         }
     }
@@ -506,6 +523,11 @@ _tdm_sprd_display_do_commit(tdm_sprd_output_data *output_data)
         if (ioctl(output_data->fb_fd, SPRD_FB_DISPLAY_OVERLAY, &ov_disp) == -1) {
             TDM_ERR( "SPRD_FB_DISPLAY_OVERLAY(%d) error: %s \n", strerror (errno), ov_disp.layer_index);
             res = TDM_ERROR_OPERATION_FAILED;
+        }
+        else
+        {
+            //save enable layers
+            enable_layers |= ov_disp.layer_index;
         }
     }
 
@@ -1359,16 +1381,25 @@ sprd_layer_set_buffer(tdm_layer *layer, tbm_surface_h surface)
         display_buffer->height = tbm_surface_get_height(surface);
         display_buffer->format = tbm_surface_get_format(surface);
         display_buffer->count = tbm_surface_internal_get_num_bos(surface);
+        count = tbm_surface_internal_get_num_planes (display_buffer->format);
+        TDM_DBG("set buffer layer(%d): %dx%d %c%c%c%c bo_num:%d plane_num:%d", layer_data->capabilities,
+                display_buffer->width, display_buffer->height, FOURCC_STR(display_buffer->format), display_buffer->count, count);
+
         for (i = 0; i < display_buffer->count; i++)
         {
             tbm_bo bo = tbm_surface_internal_get_bo (surface, i);
             display_buffer->handles[i] = tbm_bo_get_handle (bo, TBM_DEVICE_DEFAULT).u32;
             display_buffer->name[i] = tbm_bo_export(bo);
+            TDM_DBG("    set buffer layer(%d): bo%d(name:%d handle:%d)",layer_data->capabilities,
+                    i, display_buffer->name[i], display_buffer->handles[i]);
         }
-        count = tbm_surface_internal_get_num_planes (display_buffer->format);
-        for (i = 0; i < count; i++)
+        for (i = 0; i < count; i++) {
             tbm_surface_internal_get_plane_data (surface, i, &display_buffer->size, &display_buffer->offsets[i],
                                                  &display_buffer->pitches[i]);
+            TDM_DBG("    set buffer layer(%d): plane%d(size:%d offset:%d pitch:%d)",layer_data->capabilities,
+                    i, display_buffer->size, display_buffer->offsets[i], display_buffer->pitches[i]);
+
+        }
 
         if (IS_RGB(display_buffer->format))
             display_buffer->width = display_buffer->pitches[0] >> 2;
@@ -1376,7 +1407,6 @@ sprd_layer_set_buffer(tdm_layer *layer, tbm_surface_h surface)
             display_buffer->width = display_buffer->pitches[0];
     }
 
-    TDM_DBG("sprd_data->drm_fd : %d, display_buffer->fb_id:%u", sprd_data->drm_fd, display_buffer->fb_id);
     layer_data->display_buffer = display_buffer;
     layer_data->display_buffer_changed = 1;
 

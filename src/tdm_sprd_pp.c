@@ -107,7 +107,7 @@ _tdm_sprd_pp_set(tdm_sprd_pp_data *pp_data)
     memcpy(&property.config[0].sz, &info->src_config.size, sizeof(tdm_size));
     memcpy(&property.config[0].pos, &info->src_config.pos, sizeof(tdm_pos));
     property.config[1].ops_id = SPRD_DRM_OPS_DST;
-    property.config[1].degree = info->transform / 4;
+    property.config[1].degree = info->transform % 4;
     property.config[1].flip = (info->transform > 3) ? SPRD_DRM_FLIP_HORIZONTAL : 0;
     property.config[1].fmt = tdm_sprd_format_to_drm_format(info->dst_config.format);
     memcpy(&property.config[1].sz, &info->dst_config.size, sizeof(tdm_size));

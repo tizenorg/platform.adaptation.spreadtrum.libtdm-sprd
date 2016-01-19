@@ -123,9 +123,9 @@ typedef struct _Drm_Event_Context
 tbm_format img_layer_formats[] = {
         TBM_FORMAT_RGB565,
         TBM_FORMAT_XRGB8888,
-        TBM_FORMAT_ARGB8888
-//        TBM_FORMAT_NV12,
-//        TBM_FORMAT_YUV420
+        TBM_FORMAT_ARGB8888,
+        TBM_FORMAT_NV12,
+        TBM_FORMAT_YUV420
 };
 
 tbm_format osd_layer_formats[] = {
@@ -661,7 +661,7 @@ _tdm_sprd_display_create_layer_list_LCD(tdm_sprd_output_data *output_data)
     }
     layer_data->sprd_data = sprd_data;
     layer_data->output_data = output_data;
-    layer_data->capabilities = TDM_LAYER_CAPABILITY_OVERLAY | TDM_LAYER_CAPABILITY_GRAPHIC;
+    layer_data->capabilities = TDM_LAYER_CAPABILITY_OVERLAY | TDM_LAYER_CAPABILITY_GRAPHIC | TDM_LAYER_CAPABILITY_VIDEO;
     layer_data->zpos = 0;
 
     layer_data->format_count = sizeof(img_layer_formats)/sizeof(int);

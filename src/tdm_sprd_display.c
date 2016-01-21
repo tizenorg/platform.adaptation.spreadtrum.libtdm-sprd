@@ -110,6 +110,9 @@ struct _tdm_sprd_layer_data
 
     tdm_sprd_display_buffer *display_buffer;
     int display_buffer_changed;
+    // current hw overlay setting
+    overlay_info ovi;
+    int enabled_flag;
 };
 
 typedef struct _Drm_Event_Context
@@ -347,6 +350,11 @@ _tdm_sprd_display_wait_vblank(int fd, int pipe, uint *target_msc, void *data)
 static tdm_error
 _tdm_sprd_display_output_disable (tdm_sprd_output_data *output_data)
 {
+    tdm_sprd_layer_data *layer_data = NULL;
+    LIST_FOR_EACH_ENTRY(layer_data, &output_data->layer_list, link)
+    {
+        memset(&layer_data->ovi, 0, sizeof(overlay_info));
+    }
     TDM_DBG ("FB_BLANK_POWERDOWN\n");
     if (ioctl (output_data->fb_fd, FBIOBLANK, FB_BLANK_POWERDOWN) < 0)
     {
@@ -364,6 +372,38 @@ _tdm_sprd_display_output_enable(tdm_sprd_output_data *output_data)
     {
         TDM_ERR ("FB_BLANK_UNBLANK is failed: %s\n", strerror (errno));
         return TDM_ERROR_OPERATION_FAILED;
+    }
+    return TDM_ERROR_NONE;
+}
+
+static tdm_error
+_tdm_sprd_display_layer_disable(tdm_layer *layer)
+{
+    tdm_sprd_layer_data *layer_data = layer;
+    int layer_index = 0;
+    RETURN_VAL_IF_FAIL(layer_data, TDM_ERROR_OPERATION_FAILED);
+    if (layer_data->capabilities & TDM_LAYER_CAPABILITY_PRIMARY)
+    {
+        layer_index = SPRD_LAYER_OSD;
+    }
+    else if (layer_data->capabilities & TDM_LAYER_CAPABILITY_OVERLAY)
+    {
+        layer_index = SPRD_LAYER_IMG;
+    }
+    else
+    {
+        TDM_ERR ("layer capability (0x%x) not supported\n", layer_data->capabilities);
+        return TDM_ERROR_OPERATION_FAILED;
+    }
+    if (layer_data->enabled_flag)
+    {
+        TDM_DBG ("SPRD_FB_UNSET_OVERLAY(%d)\n", layer_index);
+        if (ioctl(layer_data->output_data->fb_fd, SPRD_FB_UNSET_OVERLAY, &layer_index) == -1)
+        {
+            TDM_ERR ("SPRD_FB_UNSET_OVERLAY(%d) error:%s\n", layer_index, strerror (errno));
+        }
+        memset(&layer_data->ovi, 0, sizeof(overlay_info));
+        layer_data->enabled_flag = 0;
     }
     return TDM_ERROR_NONE;
 }
@@ -414,9 +454,7 @@ _tdm_sprd_display_do_commit(tdm_sprd_output_data *output_data)
     tdm_sprd_layer_data *layer_data;
     overlay_info ovi;
     overlay_display ov_disp = {0,};
-    int layer_index;
-    static int enable_layers = 0;
-
+    int layer_index = 0;
 
     RETURN_VAL_IF_FAIL(output_data, TDM_ERROR_OPERATION_FAILED);
 
@@ -430,33 +468,22 @@ _tdm_sprd_display_do_commit(tdm_sprd_output_data *output_data)
     {
         if(!layer_data->display_buffer_changed && !layer_data->info_changed)
             continue;
-
-        if (layer_data->capabilities & TDM_LAYER_CAPABILITY_PRIMARY)
-        {
-            layer_index = SPRD_LAYER_OSD;
-        }
-        else if (layer_data->capabilities & TDM_LAYER_CAPABILITY_OVERLAY)
-        {
-            layer_index = SPRD_LAYER_IMG;
-        }
-        else
-        {
-            TDM_ERR ("layer capability (0x%x) not supported\n", layer_data->capabilities);
-            continue;
-        }
-
         if(layer_data->display_buffer)
         {
-            tbm_format frmt = layer_data->display_buffer->format;
-
-            if (frmt != layer_data->info.src_config.format)
+            if (layer_data->capabilities & TDM_LAYER_CAPABILITY_PRIMARY)
             {
-                TDM_ERR("layer  format %x %c%c%c%c\n", layer_data->info.src_config.format, FOURCC_STR(layer_data->info.src_config.format));
-                TDM_ERR("buffer format %x %c%c%c%c\n", frmt, FOURCC_STR(frmt));
-
-                layer_data->info.src_config.format = frmt;
+                layer_index = SPRD_LAYER_OSD;
             }
-
+            else if (layer_data->capabilities & TDM_LAYER_CAPABILITY_OVERLAY)
+            {
+                layer_index = SPRD_LAYER_IMG;
+            }
+            else
+            {
+                TDM_ERR ("layer capability (0x%x) not supported\n", layer_data->capabilities);
+                continue;
+            }
+            tbm_format frmt = layer_data->display_buffer->format;
             if(_tdm_sprd_tbmformat_to_sprdformat(frmt, &ovi) != TDM_ERROR_NONE)
             {
                 ovi.data_type = SPRD_DATA_FORMAT_RGB888;
@@ -468,8 +495,6 @@ _tdm_sprd_display_do_commit(tdm_sprd_output_data *output_data)
             }
 
             ovi.layer_index = layer_index;
-            ov_disp.layer_index |= layer_index;
-
             ovi.size.hsize = layer_data->display_buffer->width;
             ovi.size.vsize = layer_data->display_buffer->height;
 
@@ -480,7 +505,7 @@ _tdm_sprd_display_do_commit(tdm_sprd_output_data *output_data)
             int output_width = output_data->mi.xres;
             int width = layer_data->info.src_config.pos.w;
             int x = layer_data->info.dst_pos.x;
-            
+
             ovi.rect.w = (width + x) <= output_width ? width : output_width - x;
             ovi.rect.h = layer_data->info.src_config.pos.h;
 
@@ -492,28 +517,25 @@ _tdm_sprd_display_do_commit(tdm_sprd_output_data *output_data)
             {
                 ov_disp.img_handle = layer_data->display_buffer->name[0];
             }
-
-            TDM_DBG("SPRD_FB_SET_OVERLAY(%d) rect:%dx%d+%d+%d size:%dx%d\n", ovi.layer_index,
-                    ovi.rect.w, ovi.rect.h, ovi.rect.x, ovi.rect.y, ovi.size.hsize, ovi.size.vsize);
-            if (ioctl (layer_data->output_data->fb_fd, SPRD_FB_SET_OVERLAY, &ovi) == -1)
+            if (memcmp(&layer_data->ovi, &ovi, sizeof(overlay_info)) != 0)
             {
-                TDM_ERR ("SPRD_FB_SET_OVERLAY(%d) error:%s\n", layer_index, strerror (errno));
+                TDM_DBG("SPRD_FB_SET_OVERLAY(%d) rect:%dx%d+%d+%d size:%dx%d\n", ovi.layer_index,
+                        ovi.rect.w, ovi.rect.h, ovi.rect.x, ovi.rect.y, ovi.size.hsize, ovi.size.vsize);
+                if (ioctl (layer_data->output_data->fb_fd, SPRD_FB_SET_OVERLAY, &ovi) == -1)
+                {
+                    TDM_ERR ("SPRD_FB_SET_OVERLAY(%d) error:%s\n", layer_index, strerror (errno));
+                    continue;
+                }
+                memcpy(&layer_data->ovi, &ovi, sizeof(overlay_info));
             }
+            layer_data->enabled_flag = 1;
+            ov_disp.layer_index |= layer_index;
         }
         else
         {
-            if(enable_layers && layer_index)
-            {
-                enable_layers &= ~layer_index;
-                TDM_ERR ("SPRD_FB_UNSET_OVERLAY(%d)\n", layer_index);
-                if (ioctl(layer_data->output_data->fb_fd, SPRD_FB_UNSET_OVERLAY, &layer_index) == -1)
-                {
-                    TDM_ERR ("SPRD_FB_UNSET_OVERLAY(%d) error:%s\n", layer_index, strerror (errno));
-                }
-            }
+            _tdm_sprd_display_layer_disable(layer_data);
         }
     }
-
 
     if (ov_disp.layer_index)
     {
@@ -527,7 +549,7 @@ _tdm_sprd_display_do_commit(tdm_sprd_output_data *output_data)
         else
         {
             //save enable layers
-            enable_layers |= ov_disp.layer_index;
+//            enable_layers |= ov_disp.layer_index;
         }
     }
 
@@ -722,7 +744,8 @@ _tdm_sprd_display_cb_destroy_buffer(tbm_surface_h buffer, void *user_data)
 {
     tdm_sprd_data *sprd_data;
     tdm_sprd_display_buffer *display_buffer;
-
+    tdm_sprd_layer_data *layer_data = NULL;
+    tdm_sprd_output_data *output_data = NULL;
     if (!user_data)
     {
         TDM_ERR("no user_data");
@@ -741,6 +764,19 @@ _tdm_sprd_display_cb_destroy_buffer(tbm_surface_h buffer, void *user_data)
     {
         TDM_ERR("no display_buffer");
         return;
+    }
+    TDM_DBG("destroy buffer handle:%d", display_buffer->name[0]);
+
+    LIST_FOR_EACH_ENTRY(output_data, &sprd_data->output_list, link)
+    {
+        LIST_FOR_EACH_ENTRY(layer_data, &output_data->layer_list, link)
+        {
+            if (display_buffer == layer_data->display_buffer)
+            {
+                _tdm_sprd_display_layer_disable (layer_data);
+                layer_data->display_buffer = NULL;
+            }
+        }
     }
     LIST_DEL(&display_buffer->link);
 
@@ -1418,11 +1454,10 @@ tdm_error
 sprd_layer_unset_buffer(tdm_layer *layer)
 {
     tdm_sprd_layer_data *layer_data = layer;
-
+    TDM_DBG("Unset buffer");
     RETURN_VAL_IF_FAIL(layer_data, TDM_ERROR_INVALID_PARAMETER);
-
+    _tdm_sprd_display_layer_disable(layer);
     layer_data->display_buffer = NULL;
-    layer_data->display_buffer_changed = 1;
 
     return TDM_ERROR_NONE;
 }

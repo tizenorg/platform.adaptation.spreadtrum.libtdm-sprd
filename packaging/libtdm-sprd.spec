@@ -4,9 +4,9 @@ Release:        0
 License:        MIT
 Summary:        Tizen Display Manager Spreadtrum Back-End Library
 Group:          Development/Libraries
-ExcludeArch:    i586 x86_64
+#ExcludeArch:    i586 x86_64
 %if ("%{?tizen_target_name}" != "TM1")
-ExclusiveArch:
+#ExclusiveArch:
 %endif
 Source0:        %{name}-%{version}.tar.gz
 Source1001:     %{name}.manifest

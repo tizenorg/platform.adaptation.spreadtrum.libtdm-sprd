@@ -32,7 +32,11 @@
 #include <drm.h>
 
 #define SPRD_DRM_GEM_MAX_INDEX 3
-
+#define PP_RATIO(src,dst) ((65536*src)/dst)
+#define PP_UP_MAX_RATIO PP_RATIO(1,4)
+#define PP_DOWN_MIN_RATIO PP_RATIO(4,1)
+#define PP_CHECK_SUPPORT_ASPECT_RATIO(src_w, src_h, dst_w, dst_h) \
+    (((src_w > dst_w && src_h < dst_h) || (src_w < dst_w && src_h > dst_h)) ? 0 : 1)
 struct sprd_drm_gem_index {
 	unsigned int	bufcount;
 	uint64_t	idx_size[SPRD_DRM_GEM_MAX_INDEX];

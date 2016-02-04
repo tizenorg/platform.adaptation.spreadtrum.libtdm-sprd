@@ -1,17 +1,22 @@
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
-
+#define PP_MAX_STEP 2
 #include "tdm_sprd.h"
 typedef struct _tdm_sprd_pp_buffer
 {
     int index;
     tbm_surface_h src;
     tbm_surface_h dst;
-
     struct list_head link;
 } tdm_sprd_pp_buffer;
 
+enum
+{
+    IPP_STOP = 0,
+    IPP_RUN = 1,
+    IPP_PAUSE = 2
+};
 typedef struct _tdm_sprd_pp_data
 {
     tdm_sprd_data *sprd_data;
@@ -20,9 +25,14 @@ typedef struct _tdm_sprd_pp_data
 
     tdm_info_pp info;
     int info_changed;
-
+    tdm_info_pp tasks_array[PP_MAX_STEP];
+    tdm_sprd_pp_buffer task_buffers[PP_MAX_STEP];
+    unsigned int tasks_array_size;
+    unsigned int current_step;
+    tbm_surface_h temp_buffer[PP_MAX_STEP];
     struct list_head pending_buffer_list;
     struct list_head buffer_list;
+    struct list_head temp_buffer_list;
 
     tdm_pp_done_handler done_func;
     void *done_user_data;
@@ -93,11 +103,10 @@ _get_index(tdm_sprd_pp_data *pp_data)
     return ret;
 }
 #if 1
-static tdm_error
-_tdm_sprd_pp_set(tdm_sprd_pp_data *pp_data)
+static unsigned int
+_tdm_sprd_pp_set(tdm_sprd_pp_data *pp_data, tdm_info_pp *info, unsigned int prop_id)
 {
     tdm_sprd_data *sprd_data = pp_data->sprd_data;
-    tdm_info_pp *info = &pp_data->info;
     struct drm_sprd_ipp_property property;
     int ret = 0;
 
@@ -113,7 +122,7 @@ _tdm_sprd_pp_set(tdm_sprd_pp_data *pp_data)
     memcpy(&property.config[1].sz, &info->dst_config.size, sizeof(tdm_size));
     memcpy(&property.config[1].pos, &info->dst_config.pos, sizeof(tdm_pos));
     property.cmd = IPP_CMD_M2M;
-    property.prop_id = pp_data->prop_id;
+    property.prop_id = prop_id;
 
     TDM_DBG("src : flip(%x) deg(%d) fmt(%c%c%c%c) sz(%dx%d) pos(%d,%d %dx%d)  ",
             property.config[0].flip, property.config[0].degree, FOURCC_STR(property.config[0].fmt),
@@ -128,32 +137,32 @@ _tdm_sprd_pp_set(tdm_sprd_pp_data *pp_data)
     if (ret)
     {
         TDM_ERR("failed: %m");
-        return TDM_ERROR_OPERATION_FAILED;
+        return 0;
     }
 
-    TDM_DBG("success. prop_id(%d) ", property.prop_id);
-    pp_data->prop_id = property.prop_id;
-    return TDM_ERROR_NONE;
+    TDM_DBG("success. prop_id(%u) ", property.prop_id);
+    return property.prop_id;
 }
 #endif
 #if 1
 static tdm_error
-_tdm_sprd_pp_queue(tdm_sprd_pp_data *pp_data, tdm_sprd_pp_buffer *buffer, enum drm_sprd_ipp_buf_type type)
+_tdm_sprd_pp_queue(tdm_sprd_pp_data *pp_data, unsigned int prop_id,
+                   tbm_surface_h src, tbm_surface_h dst, enum drm_sprd_ipp_buf_type type)
 {
     tdm_sprd_data *sprd_data = pp_data->sprd_data;
     struct drm_sprd_ipp_queue_buf buf;
     int i, bo_num, ret = 0;
 
     CLEAR(buf);
-    buf.prop_id = pp_data->prop_id;
+    buf.prop_id = prop_id;
     buf.ops_id = SPRD_DRM_OPS_SRC;
     buf.buf_type = type;
-    buf.buf_id = buffer->index;
+    buf.buf_id = 0;
     buf.user_data = (__u64)(uintptr_t)pp_data;
-    bo_num = tbm_surface_internal_get_num_bos(buffer->src);
+    bo_num = tbm_surface_internal_get_num_bos(src);
     for (i = 0; i < SPRD_DRM_PLANAR_MAX && i < bo_num; i++)
     {
-        tbm_bo bo = tbm_surface_internal_get_bo(buffer->src, i);
+        tbm_bo bo = tbm_surface_internal_get_bo(src, i);
         buf.handle[i] = (__u32)tbm_bo_get_handle(bo, TBM_DEVICE_DEFAULT).u32;
     }
 
@@ -170,15 +179,15 @@ _tdm_sprd_pp_queue(tdm_sprd_pp_data *pp_data, tdm_sprd_pp_buffer *buffer, enum d
     }
 
     CLEAR(buf);
-    buf.prop_id = pp_data->prop_id;
+    buf.prop_id = prop_id;
     buf.ops_id = SPRD_DRM_OPS_DST;
     buf.buf_type = type;
-    buf.buf_id = buffer->index;
+    buf.buf_id = 0;
     buf.user_data = (__u64)(uintptr_t)pp_data;
-    bo_num = tbm_surface_internal_get_num_bos(buffer->dst);
+    bo_num = tbm_surface_internal_get_num_bos(dst);
     for (i = 0; i < SPRD_DRM_PLANAR_MAX && i < bo_num; i++)
     {
-        tbm_bo bo = tbm_surface_internal_get_bo(buffer->dst, i);
+        tbm_bo bo = tbm_surface_internal_get_bo(dst, i);
         buf.handle[i] = (__u32)tbm_bo_get_handle(bo, TBM_DEVICE_DEFAULT).u32;
     }
 
@@ -201,13 +210,12 @@ _tdm_sprd_pp_queue(tdm_sprd_pp_data *pp_data, tdm_sprd_pp_buffer *buffer, enum d
 #endif
 #if 1 
 static tdm_error
-_tdm_sprd_pp_cmd(tdm_sprd_pp_data *pp_data, enum drm_sprd_ipp_ctrl cmd)
+_tdm_sprd_pp_cmd(tdm_sprd_pp_data *pp_data, unsigned int prop_id, enum drm_sprd_ipp_ctrl cmd)
 {
     tdm_sprd_data *sprd_data = pp_data->sprd_data;
     struct drm_sprd_ipp_cmd_ctrl ctrl;
     int ret = 0;
-
-    ctrl.prop_id = pp_data->prop_id;
+    ctrl.prop_id = prop_id;
     ctrl.ctrl = cmd;
 
     TDM_DBG("prop_id(%d) ctrl(%d). ", ctrl.prop_id, ctrl.ctrl);
@@ -220,7 +228,6 @@ _tdm_sprd_pp_cmd(tdm_sprd_pp_data *pp_data, enum drm_sprd_ipp_ctrl cmd)
     }
 
     TDM_DBG("success. prop_id(%d) ", ctrl.prop_id);
-
     return TDM_ERROR_NONE;
 }
 #endif
@@ -251,37 +258,62 @@ tdm_sprd_pp_handler(int fd, tdm_sprd_data *sprd_data_p, void* hw_event_data_p)
     }
     RETURN_VOID_IF_FAIL(sprd_data_p);
 
-    TDM_DBG("pp_data(%p) index(%d, %d)", pp_data, hw_ipp_p->buf_id[0], hw_ipp_p->buf_id[1]);
-
-    LIST_FOR_EACH_ENTRY_SAFE(b, bb, &pp_data->buffer_list, link)
+    TDM_DBG("pp_data(%p) index(%d, %d) prop_id(%u)", pp_data, hw_ipp_p->buf_id[0], hw_ipp_p->buf_id[1], hw_ipp_p->prop_id);
+    if (hw_ipp_p->prop_id != pp_data->prop_id)
     {
-        if (hw_ipp_p->buf_id[0] == b->index)
-        {
-            dequeued_buffer = b;
-            LIST_DEL(&dequeued_buffer->link);
-            TDM_DBG("dequeued: %d", dequeued_buffer->index);
-            break;
-        }
-    }
-
-    if (!dequeued_buffer)
-    {
-        TDM_ERR("not found buffer index: %d", hw_ipp_p->buf_id[0]);
+        TDM_WRN("Wrong PP event");
         return;
     }
-
     if (!pp_data->first_event)
     {
         TDM_DBG("pp(%p) got a first event. ", pp_data);
         pp_data->first_event = 1;
     }
-
-    if (pp_data->done_func)
-        pp_data->done_func(pp_data,
-                           dequeued_buffer->src,
-                           dequeued_buffer->dst,
-                           pp_data->done_user_data);
-    free(dequeued_buffer);
+    LIST_FOR_EACH_ENTRY_SAFE(b, bb, &pp_data->buffer_list, link)
+    {
+        if (pp_data->task_buffers[pp_data->current_step].dst == b->dst)
+        {
+            dequeued_buffer = b;
+            LIST_DEL(&dequeued_buffer->link);
+            TDM_DBG("dequeued: %d", dequeued_buffer->index);
+            if (pp_data->done_func)
+                pp_data->done_func(pp_data,
+                                   dequeued_buffer->src,
+                                   dequeued_buffer->dst,
+                                   pp_data->done_user_data);
+            free(dequeued_buffer);
+            return;
+        }
+    }
+    pp_data->current_step++;
+    if (pp_data->current_step >= pp_data->tasks_array_size)
+    {
+        TDM_ERR("Wrong pp queue");
+        return;
+    }
+    if (pp_data->startd == IPP_RUN)
+    {
+        _tdm_sprd_pp_cmd(pp_data, pp_data->prop_id, IPP_CTRL_PAUSE);
+        pp_data->startd = IPP_PAUSE;
+    }
+    if ((pp_data->prop_id = _tdm_sprd_pp_set(pp_data, &pp_data->tasks_array[pp_data->current_step],
+                                             pp_data->prop_id)) <= 0)
+    {
+        TDM_ERR("Can't setup next pp step");
+        return;
+    }
+    _tdm_sprd_pp_queue(pp_data, pp_data->prop_id, pp_data->task_buffers[pp_data->current_step].src,
+                       pp_data->task_buffers[pp_data->current_step].dst, IPP_BUF_ENQUEUE);
+    if (pp_data->startd == IPP_STOP)
+    {
+        pp_data->startd = IPP_RUN;
+        _tdm_sprd_pp_cmd(pp_data, pp_data->prop_id, IPP_CTRL_PLAY);
+    }
+    else if(pp_data->startd == IPP_PAUSE)
+    {
+        pp_data->startd = IPP_RUN;
+        _tdm_sprd_pp_cmd(pp_data, pp_data->prop_id, IPP_CTRL_RESUME);
+    }
 }
 
 tdm_error
@@ -353,7 +385,7 @@ sprd_pp_destroy(tdm_pp *pp)
 {
     tdm_sprd_pp_data *pp_data = pp;
     tdm_sprd_pp_buffer *b = NULL, *bb = NULL;
-
+    int i;
     if (!pp_data)
         return;
     LIST_FOR_EACH_ENTRY_SAFE(b, bb, &pp_data->pending_buffer_list, link)
@@ -361,21 +393,25 @@ sprd_pp_destroy(tdm_pp *pp)
         LIST_DEL(&b->link);
         free(b);
     }
-
+    if (pp_data->prop_id && pp_data->task_buffers[pp_data->current_step].src && pp_data->task_buffers[pp_data->current_step].dst)
+    {
+        _tdm_sprd_pp_queue(pp_data, pp_data->prop_id, pp_data->task_buffers[pp_data->current_step].src,
+                           pp_data->task_buffers[pp_data->current_step].dst, IPP_BUF_DEQUEUE);
+    }
     LIST_FOR_EACH_ENTRY_SAFE(b, bb, &pp_data->buffer_list, link)
     {
         LIST_DEL(&b->link);
-#if 1
-        _tdm_sprd_pp_queue(pp_data, b, IPP_BUF_DEQUEUE);
-#endif
         free(b);
     }
-#if 1
+    for (i = 0; i < PP_MAX_STEP; i++)
+        if (pp_data->temp_buffer[i])
+        {
+            tbm_surface_destroy(pp_data->temp_buffer[i]);
+            pp_data->temp_buffer[i] = NULL;
+        }
     if (pp_data->prop_id)
-        _tdm_sprd_pp_cmd(pp_data, IPP_CTRL_STOP);
-#endif
+        _tdm_sprd_pp_cmd(pp_data, pp_data->prop_id, IPP_CTRL_STOP);
     LIST_DEL(&pp_data->link);
-
     free(pp_data);
 }
 
@@ -424,44 +460,168 @@ sprd_pp_attach(tdm_pp *pp, tbm_surface_h src, tbm_surface_h dst)
     return TDM_ERROR_NONE;
 }
 
+static tdm_error
+_sprd_pp_get_scale_leap(unsigned int src, unsigned int dst,
+                        unsigned int *leap_array, unsigned int *size)
+{
+    unsigned int i = 0;
+    unsigned int ratio, next_value = src;
+    TDM_DBG(" PP scale src %u", src);
+    for (i = 0; i < PP_MAX_STEP; i++)
+    {
+        ratio = PP_RATIO(next_value, dst);
+        if ((ratio > PP_UP_MAX_RATIO) && (ratio < PP_DOWN_MIN_RATIO))
+            break;
+        if (ratio < PP_UP_MAX_RATIO)
+        {
+            next_value = PP_RATIO(next_value, PP_UP_MAX_RATIO);
+        }
+        if (ratio > PP_DOWN_MIN_RATIO)
+        {
+            next_value =  PP_RATIO(next_value, PP_DOWN_MIN_RATIO);
+        }
+        if (leap_array)
+            leap_array[i] = next_value;
+        TDM_DBG("[%u] => %u", i, next_value);
+    }
+    if (i == PP_MAX_STEP)
+    {
+        TDM_ERR("Can't scale. Reaching maximum iteration count %d", PP_MAX_STEP);
+        return TDM_ERROR_OPERATION_FAILED;
+    }
+    TDM_DBG("[%u] dst => %u", i, dst);
+    if (leap_array)
+        leap_array[i] = dst;
+    if (size)
+        *size = i+1;
+    return TDM_ERROR_NONE;
+}
+
+static tdm_error
+_sprd_pp_make_roadmap(tdm_sprd_pp_data* pp_data)
+{
+    unsigned int height_leap[PP_MAX_STEP], width_leap[PP_MAX_STEP],
+            height_leap_size = 0, width_leap_size = 0, i, max_size;
+    if (_sprd_pp_get_scale_leap(pp_data->info.src_config.pos.h, pp_data->info.dst_config.pos.h,
+                                height_leap, &height_leap_size) != TDM_ERROR_NONE)
+    {
+        TDM_ERR("height %u -> %u ratio out of range", pp_data->info.src_config.pos.h, pp_data->info.dst_config.pos.h);
+        return TDM_ERROR_OPERATION_FAILED;
+    }
+    if (_sprd_pp_get_scale_leap(pp_data->info.src_config.pos.w, pp_data->info.dst_config.pos.w,
+                                width_leap, &width_leap_size) != TDM_ERROR_NONE)
+    {
+        TDM_ERR("width %u -> %u ratio out of range", pp_data->info.src_config.pos.w, pp_data->info.dst_config.pos.w);
+        return TDM_ERROR_OPERATION_FAILED;
+    }
+    pp_data->tasks_array[0] = pp_data->info;
+    pp_data->tasks_array[0].dst_config.pos.h = height_leap[0];
+    pp_data->tasks_array[0].dst_config.pos.w = width_leap[0];
+    max_size = (width_leap_size > height_leap_size ? width_leap_size : height_leap_size);
+    for (i = 1; i < max_size; i++)
+    {
+        if (pp_data->temp_buffer[i-1])
+        {
+            tbm_surface_destroy(pp_data->temp_buffer[i-1]);
+        }
+        pp_data->temp_buffer[i-1] = tbm_surface_internal_create_with_flags(pp_data->info.dst_config.size.v, pp_data->info.dst_config.size.h,
+                                                                           pp_data->info.dst_config.format, TBM_BO_SCANOUT);
+        if (pp_data->temp_buffer[i-1] == NULL)
+        {
+            TDM_ERR("Can't alloc buffer");
+            return TDM_ERROR_OUT_OF_MEMORY;
+        }
+        pp_data->tasks_array[i].transform = TDM_TRANSFORM_NORMAL;
+        pp_data->tasks_array[i].src_config.format = pp_data->tasks_array[i-1].dst_config.format;
+        pp_data->tasks_array[i].dst_config.format = pp_data->tasks_array[i-1].dst_config.format;
+        pp_data->tasks_array[i].src_config = pp_data->tasks_array[i-1].dst_config;
+        pp_data->tasks_array[i].dst_config = pp_data->tasks_array[i-1].dst_config;
+        pp_data->tasks_array[i].src_config.pos.x = 0;
+        pp_data->tasks_array[i].src_config.pos.y = 0;
+        pp_data->tasks_array[i].dst_config.pos.h = height_leap[((i < height_leap_size) ? i: (height_leap_size-1))];
+        pp_data->tasks_array[i].dst_config.pos.w = width_leap[((i < width_leap_size) ? i : (width_leap_size-1))];
+        pp_data->tasks_array[i].dst_config.pos.x = 0;
+        pp_data->tasks_array[i].dst_config.pos.y = 0;
+        pp_data->tasks_array[i].sync = pp_data->tasks_array[i-1].sync;
+        pp_data->tasks_array[i].flags = pp_data->tasks_array[i-1].flags;
+    }
+    pp_data->tasks_array_size = max_size;
+    pp_data->current_step = 0;
+    return TDM_ERROR_NONE;
+}
+
+static tdm_error
+_sprd_pp_reconfigure_buffers(tdm_sprd_pp_data *pp_data)
+{
+    int i;
+    tdm_sprd_pp_buffer *main_buffer = NULL, *b = NULL, *bb = NULL;
+    LIST_FOR_EACH_ENTRY_SAFE(b, bb, &pp_data->pending_buffer_list, link)
+    {
+        main_buffer = b;
+        LIST_DEL(&b->link);
+        LIST_ADDTAIL(&b->link, &pp_data->buffer_list);
+    }
+    if (main_buffer == NULL)
+    {
+        TDM_DBG("Nothing to do");
+        return TDM_ERROR_NONE;
+    }
+    pp_data->task_buffers[0].src = main_buffer->src;
+    pp_data->task_buffers[0].dst = main_buffer->dst;
+    for (i = 1; i < pp_data->tasks_array_size; i++)
+    {
+        pp_data->task_buffers[i-1].dst = pp_data->temp_buffer[i-1];
+        pp_data->task_buffers[i].src = pp_data->temp_buffer[i-1];
+        pp_data->task_buffers[i].dst = main_buffer->dst;
+    }
+    return TDM_ERROR_NONE;
+}
+
 tdm_error
 sprd_pp_commit(tdm_pp *pp)
 {
 #if 1
     tdm_sprd_pp_data *pp_data = pp;
-    tdm_sprd_pp_buffer *b = NULL, *bb = NULL;
-    tdm_error ret = TDM_ERROR_NONE;
     RETURN_VAL_IF_FAIL(pp_data, TDM_ERROR_INVALID_PARAMETER);
     if (pp_data->info_changed)
     {
-        if (pp_data->startd)
-            _tdm_sprd_pp_cmd(pp_data, IPP_CTRL_PAUSE);
-
-        ret = _tdm_sprd_pp_set(pp_data);
-        if (ret < 0)
-            return TDM_ERROR_OPERATION_FAILED;
-    }
-
-    LIST_FOR_EACH_ENTRY_SAFE(b, bb, &pp_data->pending_buffer_list, link)
-    {
-        LIST_DEL(&b->link);
-        _tdm_sprd_pp_queue(pp_data, b, IPP_BUF_ENQUEUE);
-        TDM_DBG("queued: %d", b->index);
-        LIST_ADDTAIL(&b->link, &pp_data->buffer_list);
-    }
-
-    if (pp_data->info_changed)
-    {
-        pp_data->info_changed = 0;
-
-        if (!pp_data->startd)
+        if (_sprd_pp_make_roadmap(pp_data) != TDM_ERROR_NONE)
         {
-            pp_data->startd = 1;
-            _tdm_sprd_pp_cmd(pp_data, IPP_CTRL_PLAY);
+            return TDM_ERROR_OPERATION_FAILED;
         }
-        else
-            _tdm_sprd_pp_cmd(pp_data, IPP_CTRL_RESUME);
     }
+    if (pp_data->info_changed || pp_data->tasks_array_size > 1)
+    {
+        if (pp_data->startd == IPP_RUN)
+        {
+            _tdm_sprd_pp_cmd(pp_data, pp_data->prop_id, IPP_CTRL_PAUSE);
+            pp_data->startd = IPP_PAUSE;
+        }
+        if ((pp_data->prop_id = _tdm_sprd_pp_set(pp_data, &pp_data->tasks_array[0], pp_data->prop_id)) <= 0)
+            return TDM_ERROR_OPERATION_FAILED;
+        pp_data->info_changed = 0;
+    }
+    if (_sprd_pp_reconfigure_buffers(pp_data) != TDM_ERROR_NONE)
+    {
+        return TDM_ERROR_OPERATION_FAILED;
+    }
+    if (_tdm_sprd_pp_queue(pp_data, pp_data->prop_id, pp_data->task_buffers[0].src,
+                           pp_data->task_buffers[0].dst, IPP_BUF_ENQUEUE) != TDM_ERROR_NONE)
+    {
+        return TDM_ERROR_OPERATION_FAILED;
+    }
+    pp_data->current_step = 0;
+    if (pp_data->startd == IPP_STOP)
+    {
+        pp_data->startd = IPP_RUN;
+        _tdm_sprd_pp_cmd(pp_data, pp_data->prop_id, IPP_CTRL_PLAY);
+    }
+    else if(pp_data->startd == IPP_PAUSE)
+    {
+        pp_data->startd = IPP_RUN;
+        _tdm_sprd_pp_cmd(pp_data, pp_data->prop_id, IPP_CTRL_RESUME);
+    }
+
 #endif
     return TDM_ERROR_NONE;
 }

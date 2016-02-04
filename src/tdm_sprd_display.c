@@ -273,8 +273,8 @@ _localdrmWaitVBlank(int fd, drmVBlank *vbl)
     ret = clock_gettime(CLOCK_MONOTONIC, &timeout);
     if (ret < 0)
     {
-    	TDM_ERR("clock_gettime failed: %s", strerror(errno));
-	goto out;
+        TDM_ERR("clock_gettime failed: %s", strerror(errno));
+    goto out;
     }
     timeout.tv_sec++;
 
@@ -284,16 +284,16 @@ _localdrmWaitVBlank(int fd, drmVBlank *vbl)
        vbl->request.type &= ~DRM_VBLANK_RELATIVE;
        if (ret && errno == EINTR)
        {
-	       clock_gettime(CLOCK_MONOTONIC, &cur);
-	       /* Timeout after 1s */
-	       if (cur.tv_sec > timeout.tv_sec + 1 ||
-		   (cur.tv_sec == timeout.tv_sec && cur.tv_nsec >=
-		    timeout.tv_nsec))
+           clock_gettime(CLOCK_MONOTONIC, &cur);
+           /* Timeout after 1s */
+           if (cur.tv_sec > timeout.tv_sec + 1 ||
+           (cur.tv_sec == timeout.tv_sec && cur.tv_nsec >=
+            timeout.tv_nsec))
            {
-		       errno = EBUSY;
-		       ret = -1;
-		       break;
-	       }
+               errno = EBUSY;
+               ret = -1;
+               break;
+           }
        }
     } while (ret && errno == EINTR);
 
@@ -368,6 +368,11 @@ static tdm_error
 _tdm_sprd_display_output_enable(tdm_sprd_output_data *output_data)
 {
     TDM_DBG ("FB_BLANK_UNBLANK\n");
+    tdm_sprd_layer_data *layer_data = NULL;
+    LIST_FOR_EACH_ENTRY(layer_data, &output_data->layer_list, link)
+    {
+        memset(&layer_data->ovi, 0, sizeof(overlay_info));
+    }
     if (ioctl (output_data->fb_fd, FBIOBLANK, FB_BLANK_UNBLANK) < 0)
     {
         TDM_ERR ("FB_BLANK_UNBLANK is failed: %s\n", strerror (errno));
@@ -457,13 +462,13 @@ _tdm_sprd_display_do_commit(tdm_sprd_output_data *output_data)
     int layer_index = 0;
 
     RETURN_VAL_IF_FAIL(output_data, TDM_ERROR_OPERATION_FAILED);
-
-    if (output_data->dpms_value == TDM_OUTPUT_DPMS_OFF)
+#if 0
+    if (output_data->dpms_value != TDM_OUTPUT_DPMS_ON)
     {
         output_data->dpms_value = TDM_OUTPUT_DPMS_ON;
         _tdm_sprd_display_output_enable(output_data);
     }
-
+#endif
     LIST_FOR_EACH_ENTRY(layer_data, &output_data->layer_list, link)
     {
         if(!layer_data->display_buffer_changed && !layer_data->info_changed)
@@ -664,7 +669,7 @@ _tdm_sprd_display_create_layer_list_LCD(tdm_sprd_output_data *output_data)
     layer_data->sprd_data = sprd_data;
     layer_data->output_data = output_data;
 
-    layer_data->capabilities = TDM_LAYER_CAPABILITY_PRIMARY | TDM_LAYER_CAPABILITY_GRAPHIC | TDM_LAYER_CAPABILITY_SCANOUT;
+    layer_data->capabilities = TDM_LAYER_CAPABILITY_PRIMARY | TDM_LAYER_CAPABILITY_GRAPHIC;
     layer_data->zpos = 1;
 
     layer_data->format_count = sizeof(osd_layer_formats)/sizeof(int);
@@ -683,7 +688,7 @@ _tdm_sprd_display_create_layer_list_LCD(tdm_sprd_output_data *output_data)
     }
     layer_data->sprd_data = sprd_data;
     layer_data->output_data = output_data;
-    layer_data->capabilities = TDM_LAYER_CAPABILITY_OVERLAY | TDM_LAYER_CAPABILITY_GRAPHIC | TDM_LAYER_CAPABILITY_SCANOUT;
+    layer_data->capabilities = TDM_LAYER_CAPABILITY_OVERLAY | TDM_LAYER_CAPABILITY_GRAPHIC;
     layer_data->zpos = 0;
 
     layer_data->format_count = sizeof(img_layer_formats)/sizeof(int);
@@ -1248,7 +1253,7 @@ sprd_output_set_dpms(tdm_output *output, tdm_output_dpms dpms_value)
 
     output_data->dpms_value = dpms_value;
 
-    if (dpms_value == TDM_OUTPUT_DPMS_OFF)
+    if (dpms_value != TDM_OUTPUT_DPMS_ON)
     {
         ret = _tdm_sprd_display_output_disable(output_data);
     }

@@ -47,14 +47,12 @@ typedef struct _tdm_sprd_pp_data
 static tbm_format pp_formats[] =
 {
     TBM_FORMAT_XRGB8888,
+    TBM_FORMAT_ARGB8888,
+    TBM_FORMAT_RGB888,
     TBM_FORMAT_RGB565,
-    TBM_FORMAT_YUYV,
-    TBM_FORMAT_UYVY,
     TBM_FORMAT_NV12,
-    TBM_FORMAT_NV21,
     TBM_FORMAT_YUV420,
-    TBM_FORMAT_YVU420,
-    TBM_FORMAT_YUV444,
+    TBM_FORMAT_YUV422,
 };
 #else
 static tbm_format *pp_formats = NULL;
@@ -123,6 +121,7 @@ _tdm_sprd_pp_set(tdm_sprd_pp_data *pp_data, tdm_info_pp *info, unsigned int prop
     memcpy(&property.config[1].pos, &info->dst_config.pos, sizeof(tdm_pos));
     property.cmd = IPP_CMD_M2M;
     property.prop_id = prop_id;
+    property.type = IPP_EVENT_DRIVEN;
 
     TDM_DBG("src : flip(%x) deg(%d) fmt(%c%c%c%c) sz(%dx%d) pos(%d,%d %dx%d)  ",
             property.config[0].flip, property.config[0].degree, FOURCC_STR(property.config[0].fmt),
@@ -276,6 +275,8 @@ tdm_sprd_pp_handler(int fd, tdm_sprd_data *sprd_data_p, void* hw_event_data_p)
             dequeued_buffer = b;
             LIST_DEL(&dequeued_buffer->link);
             TDM_DBG("dequeued: %d", dequeued_buffer->index);
+            pp_data->task_buffers[pp_data->current_step].dst = NULL;
+            pp_data->task_buffers[pp_data->current_step].src = NULL;
             if (pp_data->done_func)
                 pp_data->done_func(pp_data,
                                    dequeued_buffer->src,
@@ -285,6 +286,8 @@ tdm_sprd_pp_handler(int fd, tdm_sprd_data *sprd_data_p, void* hw_event_data_p)
             return;
         }
     }
+    pp_data->task_buffers[pp_data->current_step].dst = NULL;
+    pp_data->task_buffers[pp_data->current_step].src = NULL;
     pp_data->current_step++;
     if (pp_data->current_step >= pp_data->tasks_array_size)
     {
@@ -470,7 +473,7 @@ _sprd_pp_get_scale_leap(unsigned int src, unsigned int dst,
     for (i = 0; i < PP_MAX_STEP; i++)
     {
         ratio = PP_RATIO(next_value, dst);
-        if ((ratio > PP_UP_MAX_RATIO) && (ratio < PP_DOWN_MIN_RATIO))
+        if ((ratio >= PP_UP_MAX_RATIO) && (ratio <= PP_DOWN_MIN_RATIO))
             break;
         if (ratio < PP_UP_MAX_RATIO)
         {
@@ -524,13 +527,30 @@ _sprd_pp_make_roadmap(tdm_sprd_pp_data* pp_data)
         {
             tbm_surface_destroy(pp_data->temp_buffer[i-1]);
         }
-        pp_data->temp_buffer[i-1] = tbm_surface_internal_create_with_flags(pp_data->info.dst_config.size.v, pp_data->info.dst_config.size.h,
-                                                                           pp_data->info.dst_config.format, TBM_BO_SCANOUT);
+        pp_data->temp_buffer[i-1] = tbm_surface_internal_create_with_flags( width_leap[(((i-1) < width_leap_size) ? (i-1) : (width_leap_size-1))],
+                                                       height_leap[(((i-1) < height_leap_size) ? (i-1): (height_leap_size-1))],
+                                                       pp_data->info.dst_config.format, TBM_BO_SCANOUT);
         if (pp_data->temp_buffer[i-1] == NULL)
         {
             TDM_ERR("Can't alloc buffer");
             return TDM_ERROR_OUT_OF_MEMORY;
         }
+        tbm_surface_info_s surface_info;
+        tbm_surface_map(pp_data->temp_buffer[i-1], TBM_SURF_OPTION_READ, &surface_info);
+        tbm_surface_unmap(pp_data->temp_buffer[i-1]);
+        if (tbm_surface_internal_get_num_planes(pp_data->info.dst_config.format) > 1)
+        {
+            pp_data->tasks_array[i-1].dst_config.size.h = surface_info.planes[0].stride;
+        }
+        else
+        {
+            TDM_DBG("BPP = %u", (tbm_surface_internal_get_bpp(pp_data->info.dst_config.format)));
+            pp_data->tasks_array[i-1].dst_config.size.h =
+                    (surface_info.planes[0].stride << 3)/tbm_surface_internal_get_bpp(pp_data->info.dst_config.format);
+        }
+        pp_data->tasks_array[i-1].dst_config.size.v = tbm_surface_get_height(pp_data->temp_buffer[i-1]);
+        pp_data->tasks_array[i-1].dst_config.pos.w = width_leap[(((i-1) < width_leap_size) ? (i-1) : (width_leap_size-1))];
+        pp_data->tasks_array[i-1].dst_config.pos.h = height_leap[(((i-1) < height_leap_size) ? (i-1): (height_leap_size-1))];
         pp_data->tasks_array[i].transform = TDM_TRANSFORM_NORMAL;
         pp_data->tasks_array[i].src_config.format = pp_data->tasks_array[i-1].dst_config.format;
         pp_data->tasks_array[i].dst_config.format = pp_data->tasks_array[i-1].dst_config.format;
@@ -538,13 +558,12 @@ _sprd_pp_make_roadmap(tdm_sprd_pp_data* pp_data)
         pp_data->tasks_array[i].dst_config = pp_data->tasks_array[i-1].dst_config;
         pp_data->tasks_array[i].src_config.pos.x = 0;
         pp_data->tasks_array[i].src_config.pos.y = 0;
-        pp_data->tasks_array[i].dst_config.pos.h = height_leap[((i < height_leap_size) ? i: (height_leap_size-1))];
-        pp_data->tasks_array[i].dst_config.pos.w = width_leap[((i < width_leap_size) ? i : (width_leap_size-1))];
         pp_data->tasks_array[i].dst_config.pos.x = 0;
         pp_data->tasks_array[i].dst_config.pos.y = 0;
         pp_data->tasks_array[i].sync = pp_data->tasks_array[i-1].sync;
         pp_data->tasks_array[i].flags = pp_data->tasks_array[i-1].flags;
     }
+    pp_data->tasks_array[max_size-1].dst_config = pp_data->info.dst_config;
     pp_data->tasks_array_size = max_size;
     pp_data->current_step = 0;
     return TDM_ERROR_NONE;

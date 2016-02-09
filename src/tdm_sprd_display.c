@@ -462,7 +462,7 @@ _tdm_sprd_display_do_commit(tdm_sprd_output_data *output_data)
     int layer_index = 0;
 
     RETURN_VAL_IF_FAIL(output_data, TDM_ERROR_OPERATION_FAILED);
-#if 0
+#if 1
     if (output_data->dpms_value != TDM_OUTPUT_DPMS_ON)
     {
         output_data->dpms_value = TDM_OUTPUT_DPMS_ON;

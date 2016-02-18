@@ -248,9 +248,18 @@ static inline void _tdm_sprd_display_to_tdm_mode(struct fb_var_screeninfo * timi
     if (!timing->pixclock)
         return;
 
-    mode->refresh = _get_refresh(timing);
-    mode->width = timing->xres;
-    mode->height = timing->yres;
+    mode->clock = timing->pixclock / 1000;
+    mode->vrefresh = _get_refresh(timing);
+    mode->hdisplay = timing->xres;
+    mode->hsync_start = mode->hdisplay + timing->right_margin;
+    mode->hsync_end = mode->hsync_start + timing->hsync_len;
+    mode->htotal = mode->hsync_end + timing->left_margin;
+
+    mode->vdisplay = timing->yres;
+    mode->vsync_start = mode->vdisplay + timing->lower_margin;
+    mode->vsync_end = mode->vsync_start + timing->vsync_len;
+    mode->vtotal = mode->vsync_end + timing->upper_margin;
+
     mode->type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED;
 
     if (timing->vmode & FB_VMODE_INTERLACED)
@@ -260,7 +269,7 @@ static inline void _tdm_sprd_display_to_tdm_mode(struct fb_var_screeninfo * timi
         mode->flags |= DRM_MODE_FLAG_DBLSCAN;
 
     int interlaced = !!(mode->flags & DRM_MODE_FLAG_INTERLACE);
-    snprintf(mode->name, DRM_DISPLAY_MODE_LEN, "%dx%d%s", mode->width, mode->height,
+    snprintf(mode->name, DRM_DISPLAY_MODE_LEN, "%dx%d%s", mode->hdisplay, mode->vdisplay,
              interlaced ? "i" : "");
 }
 

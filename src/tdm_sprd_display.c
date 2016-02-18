@@ -1027,6 +1027,10 @@ sprd_output_get_capability(tdm_output *output, tdm_caps_output *caps)
 
     memset(caps, 0, sizeof(tdm_caps_output));
 
+    snprintf(caps->maker, TDM_NAME_LEN, "unknown");
+    snprintf(caps->model, TDM_NAME_LEN, "unknown");
+    snprintf(caps->name, TDM_NAME_LEN, "unknown");
+
     caps->status = output_data->status;
     caps->type = output_data->connector_type;
     caps->type_id = output_data->connector_type_id;

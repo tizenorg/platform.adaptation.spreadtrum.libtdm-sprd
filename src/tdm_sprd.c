@@ -22,6 +22,10 @@ static tdm_func_display sprd_func_display =
     sprd_display_get_fd,
     sprd_display_handle_events,
     sprd_display_create_pp,
+};
+
+static tdm_func_output sprd_func_output =
+{
     sprd_output_get_capability,
     sprd_output_get_layers,
     sprd_output_set_property,
@@ -35,6 +39,10 @@ static tdm_func_display sprd_func_display =
     sprd_output_set_mode,
     sprd_output_get_mode,
     NULL,   //output_create_capture
+};
+
+static tdm_func_layer sprd_func_layer =
+{
     sprd_layer_get_capability,
     sprd_layer_set_property,
     sprd_layer_get_property,
@@ -209,6 +217,14 @@ tdm_sprd_init(tdm_display *dpy, tdm_error *error)
     LIST_INITHEAD(&sprd_data->events_list);
 
     ret = tdm_backend_register_func_display(dpy, &sprd_func_display);
+    if (ret != TDM_ERROR_NONE)
+        goto failed_l;
+
+    ret = tdm_backend_register_func_output(dpy, &sprd_func_output);
+    if (ret != TDM_ERROR_NONE)
+        goto failed_l;
+
+    ret = tdm_backend_register_func_layer(dpy, &sprd_func_layer);
     if (ret != TDM_ERROR_NONE)
         goto failed_l;
 

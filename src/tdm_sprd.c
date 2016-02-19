@@ -157,7 +157,7 @@ tdm_sprd_deinit(tdm_backend_data *bdata)
 
     TDM_INFO("deinit");
     tdm_sprd_display_destroy_output_list(sprd_data);
-    tdm_sprd_display_destroy_event_list(sprd_data);
+    tdm_sprd_display_deinit_event_handling(sprd_data);
 
     free(sprd_data);
     sprd_data = NULL;
@@ -195,7 +195,6 @@ tdm_sprd_init(tdm_display *dpy, tdm_error *error)
 
     LIST_INITHEAD(&sprd_data->output_list);
     LIST_INITHEAD(&sprd_data->buffer_list);
-    LIST_INITHEAD(&sprd_data->events_list);
 
     ret = tdm_backend_register_func_display(dpy, &sprd_func_display);
     if (ret != TDM_ERROR_NONE)
@@ -234,7 +233,7 @@ tdm_sprd_init(tdm_display *dpy, tdm_error *error)
     if (ret != TDM_ERROR_NONE)
         goto failed_l;
 
-    ret = tdm_sprd_display_create_event_list(sprd_data);
+    ret = tdm_sprd_display_init_event_handling(sprd_data);
     if (ret != TDM_ERROR_NONE)
         goto failed_l;
     if (error)

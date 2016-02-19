@@ -20,6 +20,7 @@ static tdm_func_display sprd_func_display =
     NULL,  //display_get_capture_capability
     sprd_display_get_outputs,
     sprd_display_get_fd,
+    sprd_display_get_fd,
     sprd_display_handle_events,
     sprd_display_create_pp,
 };

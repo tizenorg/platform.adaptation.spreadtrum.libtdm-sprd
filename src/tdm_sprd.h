@@ -88,7 +88,8 @@ tdm_error    sprd_pp_set_done_handler(tdm_pp *pp, tdm_pp_done_handler func, void
 
 typedef struct _tdm_sprd_data
 {
-    struct list_head events_list;
+    drmEventContext evctx;
+
     tdm_display *dpy;
     int drm_fd;
     int output_count;
@@ -107,7 +108,7 @@ tdm_error    tdm_sprd_display_create_layer_list(tdm_sprd_data *sprd_data);
 
 tdm_error    tdm_sprd_pp_get_capability(tdm_sprd_data *sprd_data, tdm_caps_pp *caps);
 tdm_pp*      tdm_sprd_pp_create(tdm_sprd_data *sprd_data, tdm_error *error);
-void         tdm_sprd_pp_handler(int fd, tdm_sprd_data *sprd_data_p, void* hw_event_data);
-tdm_error   tdm_sprd_display_create_event_list(tdm_sprd_data *sprd_data);
-void        tdm_sprd_display_destroy_event_list(tdm_sprd_data *sprd_data);
+void         tdm_sprd_pp_handler(struct drm_sprd_ipp_event *hw_ipp_p);
+tdm_error   tdm_sprd_display_init_event_handling(tdm_sprd_data *sprd_data);
+void        tdm_sprd_display_deinit_event_handling(tdm_sprd_data *sprd_data);
 #endif /* _TDM_SPRD_H_ */

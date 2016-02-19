@@ -1200,41 +1200,33 @@ sprd_output_commit(tdm_output *output, int sync, void *user_data)
 
     _tdm_sprd_display_do_commit(output_data);
 
-    /* TODO: tdm_helper_drm_fd is external drm_fd which is opened by ecore_drm.
-     * This is very tricky. But we can't remove tdm_helper_drm_fd now because
-     * ecore_drm doesn't use tdm yet. When we make ecore_drm use tdm,
-     * tdm_helper_drm_fd will be removed.
-     */
-    if (tdm_helper_drm_fd == -1)
+    tdm_sprd_vblank_data *vblank_data = calloc (1, sizeof(tdm_sprd_vblank_data));
+    uint target_msc;
+
+    if (!vblank_data)
     {
-        tdm_sprd_vblank_data *vblank_data = calloc(1, sizeof(tdm_sprd_vblank_data));
-        uint target_msc;
+        TDM_ERR("alloc failed");
+        return TDM_ERROR_OUT_OF_MEMORY;
+    }
 
-        if (!vblank_data)
-        {
-            TDM_ERR("alloc failed");
-            return TDM_ERROR_OUT_OF_MEMORY;
-        }
+    ret = _tdm_sprd_display_get_cur_msc (sprd_data->drm_fd, output_data->pipe, &target_msc);
+    if (ret != TDM_ERROR_NONE)
+    {
+        free (vblank_data);
+        return ret;
+    }
 
-        ret = _tdm_sprd_display_get_cur_msc(sprd_data->drm_fd, output_data->pipe, &target_msc);
-        if (ret != TDM_ERROR_NONE)
-        {
-            free(vblank_data);
-            return ret;
-        }
+    target_msc++;
 
-        target_msc++;
+    vblank_data->type = VBLANK_TYPE_COMMIT;
+    vblank_data->output_data = output_data;
+    vblank_data->user_data = user_data;
 
-        vblank_data->type = VBLANK_TYPE_COMMIT;
-        vblank_data->output_data = output_data;
-        vblank_data->user_data = user_data;
-
-        ret = _tdm_sprd_display_wait_vblank(sprd_data->drm_fd, output_data->pipe, &target_msc, vblank_data);
-        if (ret != TDM_ERROR_NONE)
-        {
-            free(vblank_data);
-            return ret;
-        }
+    ret = _tdm_sprd_display_wait_vblank (sprd_data->drm_fd, output_data->pipe, &target_msc, vblank_data);
+    if (ret != TDM_ERROR_NONE)
+    {
+        free (vblank_data);
+        return ret;
     }
 
     return TDM_ERROR_NONE;

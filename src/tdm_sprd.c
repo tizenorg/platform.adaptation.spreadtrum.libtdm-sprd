@@ -149,6 +149,9 @@ tdm_sprd_deinit(tdm_backend_data *bdata)
 	tdm_sprd_display_destroy_output_list(sprd_data);
 	tdm_sprd_display_deinit_event_handling(sprd_data);
 
+	if (sprd_data->drm_fd >= 0)
+		close(sprd_data->drm_fd);
+
 	free(sprd_data);
 	sprd_data = NULL;
 }

@@ -11,9 +11,9 @@ typedef struct _tdm_sprd_pp_buffer {
 } tdm_sprd_pp_buffer;
 
 enum {
-        IPP_STOP = 0,
-        IPP_RUN = 1,
-        IPP_PAUSE = 2
+	IPP_STOP = 0,
+	IPP_RUN = 1,
+	IPP_PAUSE = 2
 };
 typedef struct _tdm_sprd_pp_data {
 	tdm_sprd_data *sprd_data;
@@ -263,10 +263,13 @@ tdm_sprd_pp_handler(struct drm_sprd_ipp_event *hw_ipp_p)
 				                   dequeued_buffer->src,
 				                   dequeued_buffer->dst,
 				                   pp_data->done_user_data);
+			else
+				TDM_WRN("PP Done_func is NULL");
 			free(dequeued_buffer);
 			return;
 		}
 	}
+	TDM_DBG("Next step %d", pp_data->current_step + 1);
 	pp_data->task_buffers[pp_data->current_step].dst = NULL;
 	pp_data->task_buffers[pp_data->current_step].src = NULL;
 	pp_data->current_step++;
@@ -363,6 +366,7 @@ sprd_pp_destroy(tdm_pp *pp)
 	int i;
 	if (!pp_data)
 		return;
+	TDM_DBG("Destroy pp");
 	LIST_FOR_EACH_ENTRY_SAFE(b, bb, &pp_data->pending_buffer_list, link) {
 		LIST_DEL(&b->link);
 		free(b);
@@ -388,6 +392,38 @@ sprd_pp_destroy(tdm_pp *pp)
 	free(pp_data);
 }
 
+static tdm_error
+_sprd_pp_get_scale_leap(unsigned int src, unsigned int dst,
+                        unsigned int *leap_array, unsigned int *size)
+{
+	unsigned int i = 0;
+	unsigned int ratio, next_value = src;
+	TDM_DBG(" PP scale src %u", src);
+	for (i = 0; i < PP_MAX_STEP; i++) {
+		ratio = PP_RATIO(next_value, dst);
+		if ((ratio >= PP_UP_MAX_RATIO) && (ratio <= PP_DOWN_MIN_RATIO))
+			break;
+		if (ratio < PP_UP_MAX_RATIO) {
+			next_value = PP_RATIO(next_value, PP_UP_MAX_RATIO);
+		} else if (ratio > PP_DOWN_MIN_RATIO) {
+			next_value =  PP_RATIO(next_value, PP_DOWN_MIN_RATIO);
+		}
+		if (leap_array)
+			leap_array[i] = next_value;
+		TDM_DBG("[%u] => %u", i, next_value);
+	}
+	if (i == PP_MAX_STEP) {
+		TDM_ERR("Can't scale. Reaching maximum iteration count %d", PP_MAX_STEP);
+		return TDM_ERROR_OPERATION_FAILED;
+	}
+	TDM_DBG("[%u] dst => %u", i, dst);
+	if (leap_array)
+		leap_array[i] = dst;
+	if (size)
+		*size = i + 1;
+	return TDM_ERROR_NONE;
+}
+
 tdm_error
 sprd_pp_set_info(tdm_pp *pp, tdm_info_pp *info)
 {
@@ -402,8 +438,31 @@ sprd_pp_set_info(tdm_pp *pp, tdm_info_pp *info)
 	}
 
 	pp_data->info = *info;
-	pp_data->info_changed = 1;
+	if (!pp_data->info.src_config.pos.h && !pp_data->info.src_config.pos.w) {
+		pp_data->info.src_config.pos.h = pp_data->info.src_config.size.v;
+		pp_data->info.src_config.pos.w = pp_data->info.src_config.size.h;
+	}
+	if (!pp_data->info.dst_config.pos.h && !pp_data->info.dst_config.pos.w) {
+		pp_data->info.dst_config.pos.h = pp_data->info.dst_config.size.v;
+		pp_data->info.dst_config.pos.w = pp_data->info.dst_config.size.h;
+	}
 
+	if (_sprd_pp_get_scale_leap(pp_data->info.src_config.pos.h,
+	                            pp_data->info.dst_config.pos.h,
+	                            NULL, NULL) != TDM_ERROR_NONE) {
+		TDM_ERR("height %u -> %u ratio out of range", pp_data->info.src_config.pos.h,
+		        pp_data->info.dst_config.pos.h);
+		return TDM_ERROR_INVALID_PARAMETER;
+	}
+	if (_sprd_pp_get_scale_leap(pp_data->info.src_config.pos.w,
+	                            pp_data->info.dst_config.pos.w,
+	                            NULL, NULL) != TDM_ERROR_NONE) {
+		TDM_ERR("width %u -> %u ratio out of range", pp_data->info.src_config.pos.w,
+		        pp_data->info.dst_config.pos.w);
+		return TDM_ERROR_INVALID_PARAMETER;
+	}
+
+	pp_data->info_changed = 1;
 	return TDM_ERROR_NONE;
 }
 
@@ -428,39 +487,6 @@ sprd_pp_attach(tdm_pp *pp, tbm_surface_h src, tbm_surface_h dst)
 	buffer->src = src;
 	buffer->dst = dst;
 
-	return TDM_ERROR_NONE;
-}
-
-static tdm_error
-_sprd_pp_get_scale_leap(unsigned int src, unsigned int dst,
-                        unsigned int *leap_array, unsigned int *size)
-{
-	unsigned int i = 0;
-	unsigned int ratio, next_value = src;
-	TDM_DBG(" PP scale src %u", src);
-	for (i = 0; i < PP_MAX_STEP; i++) {
-		ratio = PP_RATIO(next_value, dst);
-		if ((ratio >= PP_UP_MAX_RATIO) && (ratio <= PP_DOWN_MIN_RATIO))
-			break;
-		if (ratio < PP_UP_MAX_RATIO) {
-			next_value = PP_RATIO(next_value, PP_UP_MAX_RATIO);
-		}
-		if (ratio > PP_DOWN_MIN_RATIO) {
-			next_value =  PP_RATIO(next_value, PP_DOWN_MIN_RATIO);
-		}
-		if (leap_array)
-			leap_array[i] = next_value;
-		TDM_DBG("[%u] => %u", i, next_value);
-	}
-	if (i == PP_MAX_STEP) {
-		TDM_ERR("Can't scale. Reaching maximum iteration count %d", PP_MAX_STEP);
-		return TDM_ERROR_OPERATION_FAILED;
-	}
-	TDM_DBG("[%u] dst => %u", i, dst);
-	if (leap_array)
-		leap_array[i] = dst;
-	if (size)
-		*size = i + 1;
 	return TDM_ERROR_NONE;
 }
 
@@ -608,7 +634,7 @@ tdm_error
 sprd_pp_set_done_handler(tdm_pp *pp, tdm_pp_done_handler func, void *user_data)
 {
 	tdm_sprd_pp_data *pp_data = pp;
-
+	TDM_DBG("Set done handler pp %p func %p", pp, func);
 	RETURN_VAL_IF_FAIL(pp_data, TDM_ERROR_INVALID_PARAMETER);
 	RETURN_VAL_IF_FAIL(func, TDM_ERROR_INVALID_PARAMETER);
 

@@ -402,6 +402,16 @@ sprd_pp_set_info(tdm_pp *pp, tdm_info_pp *info)
 	}
 
 	pp_data->info = *info;
+    if (!pp_data->info.src_config.pos.h && !pp_data->info.src_config.pos.w)
+    {
+        pp_data->info.src_config.pos.h = pp_data->info.src_config.size.v;
+        pp_data->info.src_config.pos.w = pp_data->info.src_config.size.h;
+    }
+    if (!pp_data->info.dst_config.pos.h && !pp_data->info.dst_config.pos.w)
+    {
+        pp_data->info.dst_config.pos.h = pp_data->info.dst_config.size.v;
+        pp_data->info.dst_config.pos.w = pp_data->info.dst_config.size.h;
+    }
 	pp_data->info_changed = 1;
 
 	return TDM_ERROR_NONE;
@@ -442,11 +452,13 @@ _sprd_pp_get_scale_leap(unsigned int src, unsigned int dst,
 		ratio = PP_RATIO(next_value, dst);
 		if ((ratio >= PP_UP_MAX_RATIO) && (ratio <= PP_DOWN_MIN_RATIO))
 			break;
-		if (ratio < PP_UP_MAX_RATIO) {
+        if (ratio < PP_UP_MAX_RATIO)
+        {
 			next_value = PP_RATIO(next_value, PP_UP_MAX_RATIO);
 		}
-		if (ratio > PP_DOWN_MIN_RATIO) {
-			next_value =  PP_RATIO(next_value, PP_DOWN_MIN_RATIO);
+        else if (ratio > PP_DOWN_MIN_RATIO)
+        {
+            next_value =  PP_RATIO(next_value, PP_DOWN_MIN_RATIO);
 		}
 		if (leap_array)
 			leap_array[i] = next_value;

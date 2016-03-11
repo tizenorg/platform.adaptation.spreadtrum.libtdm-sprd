@@ -19,6 +19,8 @@ BuildConflicts: linux-glibc-devel
 %description
 Back-End library of Tizen Display Manager Spreadtrum : libtdm-mgr SPRD library
 
+%global TZ_SYS_RO_SHARE  %{?TZ_SYS_RO_SHARE:%TZ_SYS_RO_SHARE}%{!?TZ_SYS_RO_SHARE:/usr/share}
+
 %prep
 %if "%{?tizen_target_name}" != "TM1"
 %{error: target %{?tizen_target_name} is not supported!}
@@ -35,6 +37,9 @@ cp %{SOURCE1001} .
 make %{?_smp_mflags}
 
 %install
+rm -rf %{buildroot}
+mkdir -p %{buildroot}/%{TZ_SYS_RO_SHARE}/license
+cp -af COPYING %{buildroot}/%{TZ_SYS_RO_SHARE}/license/%{name}
 %make_install
 
 %post
@@ -46,7 +51,7 @@ ln -s libtdm-sprd.so %{_libdir}/tdm/libtdm-default.so
 %postun -p /sbin/ldconfig
 
 %files
-%manifest %{name}.manifest
-%license COPYING
 %defattr(-,root,root,-)
+%manifest %{name}.manifest
+%{TZ_SYS_RO_SHARE}/license/%{name}
 %{_libdir}/tdm/libtdm-sprd.so

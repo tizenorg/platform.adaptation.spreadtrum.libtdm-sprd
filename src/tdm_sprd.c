@@ -13,52 +13,6 @@
 
 #define SPRD_DRM_NAME "sprd"
 
-static tdm_func_display sprd_func_display = {
-	sprd_display_get_capabilitiy,
-	sprd_display_get_pp_capability,
-	NULL,  //display_get_capture_capability
-	sprd_display_get_outputs,
-	sprd_display_get_fd,
-	sprd_display_handle_events,
-	sprd_display_create_pp,
-};
-
-static tdm_func_output sprd_func_output = {
-	sprd_output_get_capability,
-	sprd_output_get_layers,
-	sprd_output_set_property,
-	sprd_output_get_property,
-	sprd_output_wait_vblank,
-	sprd_output_set_vblank_handler,
-	sprd_output_commit,
-	sprd_output_set_commit_handler,
-	sprd_output_set_dpms,
-	sprd_output_get_dpms,
-	sprd_output_set_mode,
-	sprd_output_get_mode,
-	NULL,   //output_create_capture
-};
-
-static tdm_func_layer sprd_func_layer = {
-	sprd_layer_get_capability,
-	sprd_layer_set_property,
-	sprd_layer_get_property,
-	sprd_layer_set_info,
-	sprd_layer_get_info,
-	sprd_layer_set_buffer,
-	sprd_layer_unset_buffer,
-	NULL,    //layer_set_video_pos
-	NULL,    //layer_create_capture
-};
-
-static tdm_func_pp sprd_func_pp = {
-	sprd_pp_destroy,
-	sprd_pp_set_info,
-	sprd_pp_attach,
-	sprd_pp_commit,
-	sprd_pp_set_done_handler,
-};
-
 static tdm_sprd_data *sprd_data;
 
 static int
@@ -158,6 +112,10 @@ tdm_sprd_deinit(tdm_backend_data *bdata)
 tdm_backend_data *
 tdm_sprd_init(tdm_display *dpy, tdm_error *error)
 {
+	tdm_func_display sprd_func_display;
+	tdm_func_output sprd_func_output;
+	tdm_func_layer sprd_func_layer;
+	tdm_func_pp sprd_func_pp;
 	tdm_error ret;
 
 	if (!dpy) {
@@ -184,6 +142,44 @@ tdm_sprd_init(tdm_display *dpy, tdm_error *error)
 
 	LIST_INITHEAD(&sprd_data->output_list);
 	LIST_INITHEAD(&sprd_data->buffer_list);
+
+	memset(&sprd_func_display, 0, sizeof(sprd_func_display));
+	sprd_func_display.display_get_capabilitiy = sprd_display_get_capabilitiy;
+	sprd_func_display.display_get_pp_capability = sprd_display_get_pp_capability;
+	sprd_func_display.display_get_outputs = sprd_display_get_outputs;
+	sprd_func_display.display_get_fd = sprd_display_get_fd;
+	sprd_func_display.display_handle_events = sprd_display_handle_events;
+	sprd_func_display.display_create_pp = sprd_display_create_pp;
+
+	memset(&sprd_func_output, 0, sizeof(sprd_func_output));
+	sprd_func_output.output_get_capability = sprd_output_get_capability;
+	sprd_func_output.output_get_layers = sprd_output_get_layers;
+	sprd_func_output.output_set_property = sprd_output_set_property;
+	sprd_func_output.output_get_property = sprd_output_get_property;
+	sprd_func_output.output_wait_vblank = sprd_output_wait_vblank;
+	sprd_func_output.output_set_vblank_handler = sprd_output_set_vblank_handler;
+	sprd_func_output.output_commit = sprd_output_commit;
+	sprd_func_output.output_set_commit_handler = sprd_output_set_commit_handler;
+	sprd_func_output.output_set_dpms = sprd_output_set_dpms;
+	sprd_func_output.output_get_dpms = sprd_output_get_dpms;
+	sprd_func_output.output_set_mode = sprd_output_set_mode;
+	sprd_func_output.output_get_mode = sprd_output_get_mode;
+
+	memset(&sprd_func_layer, 0, sizeof(sprd_func_layer));
+	sprd_func_layer.layer_get_capability = sprd_layer_get_capability;
+	sprd_func_layer.layer_set_property = sprd_layer_set_property;
+	sprd_func_layer.layer_get_property = sprd_layer_get_property;
+	sprd_func_layer.layer_set_info = sprd_layer_set_info;
+	sprd_func_layer.layer_get_info = sprd_layer_get_info;
+	sprd_func_layer.layer_set_buffer = sprd_layer_set_buffer;
+	sprd_func_layer.layer_unset_buffer = sprd_layer_unset_buffer;
+
+	memset(&sprd_func_pp, 0, sizeof(sprd_func_pp));
+	sprd_func_pp.pp_destroy = sprd_pp_destroy;
+	sprd_func_pp.pp_set_info = sprd_pp_set_info;
+	sprd_func_pp.pp_attach = sprd_pp_attach;
+	sprd_func_pp.pp_commit = sprd_pp_commit;
+	sprd_func_pp.pp_set_done_handler = sprd_pp_set_done_handler;
 
 	ret = tdm_backend_register_func_display(dpy, &sprd_func_display);
 	if (ret != TDM_ERROR_NONE)

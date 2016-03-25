@@ -509,6 +509,7 @@ _sprd_pp_make_roadmap(tdm_sprd_pp_data *pp_data, tdm_info_pp *info)
 			 height_leap_size = 0, width_leap_size = 0, i, max_size;
 	TDM_DBG("Height %u", info->src_config.pos.h);
 	unsigned int dst_height = (info->transform % 2 == 0) ? info->dst_config.pos.h : info->dst_config.pos.w;
+	//unsigned int dst_height = info->dst_config.pos.h;
 	if (_sprd_pp_get_scale_leap(info->src_config.pos.h,
 								dst_height,
 								height_leap, &height_leap_size) != TDM_ERROR_NONE) {
@@ -518,6 +519,7 @@ _sprd_pp_make_roadmap(tdm_sprd_pp_data *pp_data, tdm_info_pp *info)
 	}
 	TDM_DBG("Width %u", info->src_config.pos.w);
 	unsigned int dst_width = (info->transform % 2 == 0) ? info->dst_config.pos.w : info->dst_config.pos.h;
+	//unsigned int dst_width = info->dst_config.pos.w;
 	if (_sprd_pp_get_scale_leap(info->src_config.pos.w,
 								dst_width,
 								width_leap, &width_leap_size) != TDM_ERROR_NONE) {
@@ -556,6 +558,8 @@ _sprd_pp_make_roadmap(tdm_sprd_pp_data *pp_data, tdm_info_pp *info)
 		}
 	}
 	pp_data->roadmap.step_info[max_size - 1].dst_config = info->dst_config;
+	pp_data->roadmap.step_info[max_size - 1].dst_config.pos.h = height_leap[height_leap_size-1];
+	pp_data->roadmap.step_info[max_size - 1].dst_config.pos.w = width_leap[width_leap_size - 1];
 	pp_data->roadmap.max_step = max_size;
 	return TDM_ERROR_NONE;
 }
@@ -664,7 +668,7 @@ sprd_pp_commit(tdm_pp *pp)
 		}
 		for (i = 0; i < pp_data->roadmap.max_step; i++) {
 			pp_data->roadmap.prop_id[i] = _tdm_sprd_pp_set(pp_data, &pp_data->roadmap.step_info[i], pp_data->roadmap.prop_id[i]);
-			if (pp_data->roadmap.prop_id <= 0) {
+			if (pp_data->roadmap.prop_id[i] <= 0) {
 				TDM_ERR("Can't setup pp");
 				return TDM_ERROR_BAD_REQUEST;
 			}

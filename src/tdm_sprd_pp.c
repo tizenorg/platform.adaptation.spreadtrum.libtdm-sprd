@@ -48,7 +48,7 @@ typedef struct _tdm_sprd_pp_data {
 		unsigned int prop_id[PP_MAX_STEP];
 		tdm_info_pp step_info[PP_MAX_STEP];
 		unsigned int max_step;
-	}  roadmap;
+	} roadmap;
 	tdm_sprd_pp_task *current_task_p;
 	tdm_pp_done_handler done_func;
 	void *done_user_data;
@@ -505,68 +505,77 @@ _sprd_pp_get_scale_leap(unsigned int src, unsigned int dst,
 static tdm_error
 _sprd_pp_make_roadmap(tdm_sprd_pp_data *pp_data, tdm_info_pp *info)
 {
+
 	unsigned int height_leap[PP_MAX_STEP], width_leap[PP_MAX_STEP],
-			 height_leap_size = 0, width_leap_size = 0, i, max_size;
+			 height_leap_size = 0, width_leap_size = 0, max_size = 0, i,
+			 src_height = (info->transform % 2) ? info->src_config.pos.w : info->src_config.pos.h,
+			 src_width = (info->transform % 2) ? info->src_config.pos.h : info->src_config.pos.w;
 	TDM_DBG("Height %u", info->src_config.pos.h);
-	unsigned int dst_height = (info->transform % 2 == 0) ? info->dst_config.pos.h : info->dst_config.pos.w;
-	//unsigned int dst_height = info->dst_config.pos.h;
-	if (_sprd_pp_get_scale_leap(info->src_config.pos.h,
-								dst_height,
-								(info->transform % 2 == 0)? height_leap : width_leap,
-								(info->transform % 2 == 0)? &height_leap_size: &width_leap_size) != TDM_ERROR_NONE) {
+	if (_sprd_pp_get_scale_leap(src_height,
+								info->dst_config.pos.h,
+								height_leap,
+								&height_leap_size) != TDM_ERROR_NONE) {
 		TDM_ERR("height %u -> %u ratio out of range", info->src_config.pos.h,
 				info->dst_config.pos.h);
 		return TDM_ERROR_OPERATION_FAILED;
 	}
 	TDM_DBG("Width %u", info->src_config.pos.w);
-	unsigned int dst_width = (info->transform % 2 == 0) ? info->dst_config.pos.w : info->dst_config.pos.h;
-	//unsigned int dst_width = info->dst_config.pos.w;
-	if (_sprd_pp_get_scale_leap(info->src_config.pos.w,
-								dst_width,
-								(info->transform % 2 == 0)? width_leap : height_leap,
-								(info->transform % 2 == 0)? &width_leap_size : &height_leap_size) != TDM_ERROR_NONE) {
+	if (_sprd_pp_get_scale_leap(src_width,
+								info->dst_config.pos.w,
+								width_leap,
+								&width_leap_size) != TDM_ERROR_NONE) {
 		TDM_ERR("width %u -> %u ratio out of range", info->src_config.pos.w,
 				info->dst_config.pos.w);
 		return TDM_ERROR_OPERATION_FAILED;
 	}
-
+	max_size = (width_leap_size > height_leap_size ? width_leap_size :
+				height_leap_size);
+	if ((src_height < height_leap[height_leap_size -1] &&
+		src_width > width_leap[width_leap_size -1]) ||
+		(src_height > height_leap[height_leap_size -1] &&
+		 src_width < width_leap[width_leap_size - 1])) {
+		if (max_size > 1 || max_size == PP_MAX_STEP) {
+			TDM_ERR ("Unsupported scale");
+			return TDM_ERROR_OPERATION_FAILED;
+		}
+		height_leap[1] = height_leap[0];
+		height_leap[0] = src_height;
+		height_leap_size = 2;
+/*
+		width_leap[1] = width_leap[0];
+		width_leap[0] = src_width;
+		width_leap_size = 2;
+*/
+	}
 	memcpy(&pp_data->roadmap.step_info[0], info, sizeof(tdm_info_pp));
 	pp_data->roadmap.step_info[0].dst_config.pos.h = height_leap[0];
 	pp_data->roadmap.step_info[0].dst_config.pos.w = width_leap[0];
 	max_size = (width_leap_size > height_leap_size ? width_leap_size :
 				height_leap_size);
-	if (max_size > 1) {
-		unsigned int max_width = (info->src_config.size.h > info->dst_config.size.h) ? info->src_config.size.h : info->dst_config.size.h;
-		unsigned int max_height = (info->src_config.size.v > info->dst_config.size.v) ? info->src_config.size.v : info->dst_config.size.v;
-		for (i = 1; i < max_size; i++) {
-			pp_data->roadmap.step_info[i - 1].dst_config.pos.w =
-					width_leap[(((i - 1) < width_leap_size) ? (i - 1) : (width_leap_size - 1))];
-			pp_data->roadmap.step_info[i - 1].dst_config.pos.h =
-					height_leap[(((i - 1) < height_leap_size) ? (i - 1) : (height_leap_size - 1))];
-			pp_data->roadmap.step_info[i - 1].dst_config.size.h = max_width;
-			pp_data->roadmap.step_info[i - 1].dst_config.size.v = max_height;
-			pp_data->roadmap.step_info[i].transform = TDM_TRANSFORM_NORMAL;
-			pp_data->roadmap.step_info[i].src_config.format = pp_data->roadmap.step_info[i - 1].dst_config.format;
-			pp_data->roadmap.step_info[i].dst_config.format = pp_data->roadmap.step_info[i - 1].dst_config.format;
-			pp_data->roadmap.step_info[i].src_config = pp_data->roadmap.step_info[i - 1].dst_config;
-			pp_data->roadmap.step_info[i].dst_config = pp_data->roadmap.step_info[i - 1].dst_config;
-			pp_data->roadmap.step_info[i].src_config.size.h = max_width;
-			pp_data->roadmap.step_info[i].src_config.size.v = max_height;
-			pp_data->roadmap.step_info[i].src_config.pos.x = 0;
-			pp_data->roadmap.step_info[i].src_config.pos.y = 0;
-			pp_data->roadmap.step_info[i].dst_config.pos.x = 0;
-			pp_data->roadmap.step_info[i].dst_config.pos.y = 0;
-			pp_data->roadmap.step_info[i].sync = pp_data->roadmap.step_info[i - 1].sync;
-			pp_data->roadmap.step_info[i].flags = pp_data->roadmap.step_info[i - 1].flags;
-		}
+	for (i = 1; i < max_size; i++) {
+		pp_data->roadmap.step_info[i - 1].dst_config.pos.w =
+								width_leap[(((i - 1) < width_leap_size) ? (i - 1) : (width_leap_size - 1))];
+		pp_data->roadmap.step_info[i - 1].dst_config.pos.h =
+								height_leap[(((i - 1) < height_leap_size) ? (i - 1) : (height_leap_size - 1))];
+		pp_data->roadmap.step_info[i - 1].dst_config.size.h = pp_data->roadmap.step_info[i - 1].dst_config.pos.w;
+		pp_data->roadmap.step_info[i - 1].dst_config.size.v = pp_data->roadmap.step_info[i - 1].dst_config.pos.h;
+		pp_data->roadmap.step_info[i].transform = TDM_TRANSFORM_NORMAL;
+		pp_data->roadmap.step_info[i].src_config.format = pp_data->roadmap.step_info[i - 1].dst_config.format;
+		pp_data->roadmap.step_info[i].dst_config.format = pp_data->roadmap.step_info[i - 1].dst_config.format;
+		pp_data->roadmap.step_info[i].src_config = pp_data->roadmap.step_info[i - 1].dst_config;
+		pp_data->roadmap.step_info[i].dst_config = pp_data->roadmap.step_info[i - 1].dst_config;
+		pp_data->roadmap.step_info[i].src_config.pos.x = 0;
+		pp_data->roadmap.step_info[i].src_config.pos.y = 0;
+		pp_data->roadmap.step_info[i].dst_config.pos.x = 0;
+		pp_data->roadmap.step_info[i].dst_config.pos.y = 0;
+		pp_data->roadmap.step_info[i].sync = pp_data->roadmap.step_info[i - 1].sync;
+		pp_data->roadmap.step_info[i].flags = pp_data->roadmap.step_info[i - 1].flags;
 	}
-	pp_data->roadmap.step_info[max_size - 1].dst_config = info->dst_config;
-	pp_data->roadmap.step_info[max_size - 1].dst_config.pos.h = height_leap[height_leap_size-1];
-	pp_data->roadmap.step_info[max_size - 1].dst_config.pos.w = width_leap[width_leap_size - 1];
+	memcpy(&pp_data->roadmap.step_info[max_size - 1].dst_config, &info->dst_config, sizeof(tdm_info_config));
 	pp_data->roadmap.max_step = max_size;
+	//_sprd_pp_make_roadmap_transform (pp_data, info);
 	return TDM_ERROR_NONE;
 }
-
 
 tdm_error
 sprd_pp_set_info(tdm_pp *pp, tdm_info_pp *info)
@@ -635,6 +644,8 @@ _tdm_sprd_pp_make_new_tasks(tdm_sprd_pp_data *pp_data)
 		new_task->buffers[0].src = main_buffer->src;
 		tbm_surface_internal_ref(main_buffer->dst);
 		new_task->buffers[new_task->max_step-1].dst = main_buffer->dst;
+
+#if 0
 		if (new_task->max_step > 1) {
 			tbm_surface_info_s src_buf_info;
 			tbm_surface_info_s dst_buf_info;
@@ -649,6 +660,14 @@ _tdm_sprd_pp_make_new_tasks(tdm_sprd_pp_data *pp_data)
 				new_task->buffers[i].src = new_task->buffers[i-1].dst;
 			}
 		}
+#endif
+		for (i = 1; i < new_task->max_step; i++) {
+			new_task->buffers[i-1].dst = tbm_surface_create (pp_data->roadmap.step_info[i-1].dst_config.size.h,
+															 pp_data->roadmap.step_info[i-1].dst_config.size.v,
+															 pp_data->roadmap.step_info[i-1].dst_config.format);
+			tbm_surface_internal_ref(new_task->buffers[i-1].dst);
+			new_task->buffers[i].src = new_task->buffers[i-1].dst;
+			}
 		LIST_ADDTAIL(&new_task->link, &pp_data->pending_tasks_list);
 	}
 	if (main_buffer == NULL) {

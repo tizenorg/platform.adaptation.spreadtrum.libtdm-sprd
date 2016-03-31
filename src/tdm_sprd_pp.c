@@ -408,7 +408,7 @@ tdm_sprd_pp_get_capability(tdm_sprd_data *sprd_data, tdm_caps_pp *caps)
 	caps->min_h = 8;
 	caps->max_w = -1;   /* not defined */
 	caps->max_h = -1;
-	caps->preferred_align = 16;
+	caps->preferred_align = 2;
 
 	return TDM_ERROR_NONE;
 }

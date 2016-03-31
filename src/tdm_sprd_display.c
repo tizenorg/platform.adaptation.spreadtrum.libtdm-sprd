@@ -612,48 +612,53 @@ _tdm_sprd_display_create_layer_list_LCD(tdm_sprd_output_data *output_data)
 
 	tdm_sprd_data *sprd_data = output_data->sprd_data;
 	tdm_sprd_layer_data *layer_data;
+	int alloc_fail = 0;
 
 	//create OSD layer
 	layer_data = calloc (1, sizeof(tdm_sprd_layer_data));
 	if (!layer_data) {
-		TDM_ERR("alloc failed");
+		TDM_ERR("alloc failed osd");
+		alloc_fail = 1;
 	}
+	if (alloc_fail == 0) {
+		layer_data->sprd_data = sprd_data;
+		layer_data->output_data = output_data;
 
-	layer_data->sprd_data = sprd_data;
-	layer_data->output_data = output_data;
+		layer_data->capabilities = TDM_LAYER_CAPABILITY_PRIMARY |
+		                           TDM_LAYER_CAPABILITY_GRAPHIC | TDM_LAYER_CAPABILITY_SCANOUT;
+		layer_data->zpos = 1;
 
-	layer_data->capabilities = TDM_LAYER_CAPABILITY_PRIMARY |
-	                           TDM_LAYER_CAPABILITY_GRAPHIC | TDM_LAYER_CAPABILITY_SCANOUT;
-	layer_data->zpos = 1;
+		layer_data->format_count = sizeof(osd_layer_formats) / sizeof(int);
+		layer_data->formats = osd_layer_formats;
 
-	layer_data->format_count = sizeof(osd_layer_formats) / sizeof(int);
-	layer_data->formats = osd_layer_formats;
-
-	TDM_DBG("layer_data(%p) capabilities(%x)", layer_data,
+		TDM_DBG("layer_data(%p) capabilities(%x)", layer_data,
 	        layer_data->capabilities);
 
-	LIST_ADDTAIL(&layer_data->link, &output_data->layer_list);
-
+		LIST_ADDTAIL(&layer_data->link, &output_data->layer_list);
+	}
 
 	//create IMG layer
+    alloc_fail = 0;
 	layer_data = calloc (1, sizeof(tdm_sprd_layer_data));
 	if (!layer_data) {
-		TDM_ERR("alloc failed");
+		TDM_ERR("alloc failed img");
+		alloc_fail = 1;
 	}
-	layer_data->sprd_data = sprd_data;
-	layer_data->output_data = output_data;
-	layer_data->capabilities = TDM_LAYER_CAPABILITY_OVERLAY |
-	                           TDM_LAYER_CAPABILITY_GRAPHIC | TDM_LAYER_CAPABILITY_SCANOUT;
-	layer_data->zpos = 0;
+	if (alloc_fail == 0) {
+		layer_data->sprd_data = sprd_data;
+		layer_data->output_data = output_data;
+		layer_data->capabilities = TDM_LAYER_CAPABILITY_OVERLAY |
+		                           TDM_LAYER_CAPABILITY_GRAPHIC | TDM_LAYER_CAPABILITY_SCANOUT;
+		layer_data->zpos = 0;
 
-	layer_data->format_count = sizeof(img_layer_formats) / sizeof(int);
-	layer_data->formats = img_layer_formats;
+		layer_data->format_count = sizeof(img_layer_formats) / sizeof(int);
+		layer_data->formats = img_layer_formats;
 
-	TDM_DBG("layer_data(%p) capabilities(%x)", layer_data,
+		TDM_DBG("layer_data(%p) capabilities(%x)", layer_data,
 	        layer_data->capabilities);
 
-	LIST_ADDTAIL(&layer_data->link, &output_data->layer_list);
-
+		LIST_ADDTAIL(&layer_data->link, &output_data->layer_list);
+	}
 
 	return TDM_ERROR_NONE;
 }
@@ -762,7 +767,7 @@ _tdm_sprd_display_create_output_LCD(tdm_sprd_data *sprd_data)
 		if (!output_data->output_modes) {
 			TDM_ERR("alloc failed");
 			free (output_data);
-			goto failed_create;
+			return NULL;
 		}
 		_tdm_sprd_display_to_tdm_mode (&output_data->mi, &output_data->output_modes[0]);
 	}
@@ -774,14 +779,7 @@ _tdm_sprd_display_create_output_LCD(tdm_sprd_data *sprd_data)
 
 	_tdm_sprd_display_create_layer_list_LCD(output_data);
 
-
 	return output_data;
-failed_create:
-
-	if (output_data->output_modes)
-		free(output_data->output_modes);
-
-	return NULL;
 }
 
 

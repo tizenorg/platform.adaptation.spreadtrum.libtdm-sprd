@@ -608,51 +608,54 @@ _tdm_sprd_display_events_handle(int fd, Drm_Event_Context *evctx)
 static tdm_error
 _tdm_sprd_display_create_layer_list_LCD(tdm_sprd_output_data *output_data)
 {
-	RETURN_VAL_IF_FAIL(output_data, TDM_ERROR_OPERATION_FAILED);
+	RETURN_VAL_IF_FAIL(output_data, TDM_ERROR_INVALID_PARAMETER);
 
 	tdm_sprd_data *sprd_data = output_data->sprd_data;
-	tdm_sprd_layer_data *layer_data;
+	tdm_sprd_layer_data *layer_data_osd, *layer_data_img;
 
-	//create OSD layer
-	layer_data = calloc (1, sizeof(tdm_sprd_layer_data));
-	if (!layer_data) {
-		TDM_ERR("alloc failed");
+	layer_data_osd = calloc (1, sizeof(tdm_sprd_layer_data));
+	if (!layer_data_osd) {
+		TDM_ERR("alloc failed osd");
+		return TDM_ERROR_OUT_OF_MEMORY;
+	}
+	layer_data_img = calloc (1, sizeof(tdm_sprd_layer_data));
+	if (!layer_data_img) {
+		TDM_ERR("alloc failed img");
+		free(layer_data_osd);
+		return TDM_ERROR_OUT_OF_MEMORY;
 	}
 
-	layer_data->sprd_data = sprd_data;
-	layer_data->output_data = output_data;
+    /* create OSD layer */
+	layer_data_osd->sprd_data = sprd_data;
+	layer_data_osd->output_data = output_data;
 
-	layer_data->capabilities = TDM_LAYER_CAPABILITY_PRIMARY |
+	layer_data_osd->capabilities = TDM_LAYER_CAPABILITY_PRIMARY |
 	                           TDM_LAYER_CAPABILITY_GRAPHIC | TDM_LAYER_CAPABILITY_SCANOUT;
-	layer_data->zpos = 1;
+	layer_data_osd->zpos = 1;
 
-	layer_data->format_count = sizeof(osd_layer_formats) / sizeof(int);
-	layer_data->formats = osd_layer_formats;
+	layer_data_osd->format_count = sizeof(osd_layer_formats) / sizeof(int);
+	layer_data_osd->formats = osd_layer_formats;
 
-	TDM_DBG("layer_data(%p) capabilities(%x)", layer_data,
-	        layer_data->capabilities);
+	TDM_DBG("layer_data_osd(%p) capabilities(%x)", layer_data_osd,
+	        layer_data_osd->capabilities);
 
-	LIST_ADDTAIL(&layer_data->link, &output_data->layer_list);
+	LIST_ADDTAIL(&layer_data_osd->link, &output_data->layer_list);
 
 
-	//create IMG layer
-	layer_data = calloc (1, sizeof(tdm_sprd_layer_data));
-	if (!layer_data) {
-		TDM_ERR("alloc failed");
-	}
-	layer_data->sprd_data = sprd_data;
-	layer_data->output_data = output_data;
-	layer_data->capabilities = TDM_LAYER_CAPABILITY_OVERLAY |
+	/* create IMG layer */
+	layer_data_img->sprd_data = sprd_data;
+	layer_data_img->output_data = output_data;
+	layer_data_img->capabilities = TDM_LAYER_CAPABILITY_OVERLAY |
 	                           TDM_LAYER_CAPABILITY_GRAPHIC | TDM_LAYER_CAPABILITY_SCANOUT;
-	layer_data->zpos = 0;
+	layer_data_img->zpos = 0;
 
-	layer_data->format_count = sizeof(img_layer_formats) / sizeof(int);
-	layer_data->formats = img_layer_formats;
+	layer_data_img->format_count = sizeof(img_layer_formats) / sizeof(int);
+	layer_data_img->formats = img_layer_formats;
 
-	TDM_DBG("layer_data(%p) capabilities(%x)", layer_data,
-	        layer_data->capabilities);
+	TDM_DBG("layer_data_img(%p) capabilities(%x)", layer_data_img,
+	        layer_data_img->capabilities);
 
-	LIST_ADDTAIL(&layer_data->link, &output_data->layer_list);
+	LIST_ADDTAIL(&layer_data_img->link, &output_data->layer_list);
 
 
 	return TDM_ERROR_NONE;
@@ -661,8 +664,8 @@ _tdm_sprd_display_create_layer_list_LCD(tdm_sprd_output_data *output_data)
 tdm_error
 _tdm_sprd_display_output_update(tdm_sprd_output_data *output)
 {
-	RETURN_VAL_IF_FAIL(output, TDM_ERROR_OPERATION_FAILED);
-	RETURN_VAL_IF_FAIL(output->fb_fd_name, TDM_ERROR_OPERATION_FAILED);
+	RETURN_VAL_IF_FAIL(output, TDM_ERROR_INVALID_PARAMETER);
+	RETURN_VAL_IF_FAIL(output->fb_fd_name, TDM_ERROR_INVALID_PARAMETER);
 
 	if (!output->fb_fd)
 		output->fb_fd = open (output->fb_fd_name, O_RDWR, 0);
@@ -688,8 +691,8 @@ _tdm_sprd_display_output_update(tdm_sprd_output_data *output)
 failed:
 
 	if (output->fb_fd > 0) {
-		output->fb_fd = 0;
 		close(output->fb_fd);
+		output->fb_fd = 0;
 	}
 	output->dpms_value = TDM_OUTPUT_DPMS_OFF;
 	output->status = TDM_OUTPUT_CONN_STATUS_DISCONNECTED;
@@ -738,6 +741,7 @@ tdm_sprd_output_data *
 _tdm_sprd_display_create_output_LCD(tdm_sprd_data *sprd_data)
 {
 	tdm_sprd_output_data *output_data = NULL;
+	tdm_error ret = TDM_ERROR_NONE;
 
 	output_data = calloc (1, sizeof(tdm_sprd_output_data));
 	if (!output_data) {
@@ -752,7 +756,12 @@ _tdm_sprd_display_create_output_LCD(tdm_sprd_data *sprd_data)
 	output_data->fb_fd_name = FB_DEV_LCD;
 	LIST_INITHEAD(&output_data->layer_list);
 
-	_tdm_sprd_display_output_update (output_data);
+	ret = _tdm_sprd_display_output_update (output_data);
+	if (ret != TDM_ERROR_NONE) {
+		TDM_ERR("_tdm_sprd_display_output_update failed (%d)", ret);
+		free(output_data);
+		return NULL;
+	}
 
 	if (output_data->status == TDM_OUTPUT_CONN_STATUS_CONNECTED) {
 		//LCD has only one mode
@@ -761,8 +770,10 @@ _tdm_sprd_display_create_output_LCD(tdm_sprd_data *sprd_data)
 		                                    sizeof(tdm_output_mode));
 		if (!output_data->output_modes) {
 			TDM_ERR("alloc failed");
+			if (output_data->fb_fd > 0)
+				close(output_data->fb_fd);
 			free (output_data);
-			goto failed_create;
+			return NULL;
 		}
 		_tdm_sprd_display_to_tdm_mode (&output_data->mi, &output_data->output_modes[0]);
 	}
@@ -772,16 +783,17 @@ _tdm_sprd_display_create_output_LCD(tdm_sprd_data *sprd_data)
 	        output_data->connector_type, output_data->connector_type_id, output_data->pipe,
 	        output_data->dpms_value);
 
-	_tdm_sprd_display_create_layer_list_LCD(output_data);
-
+	ret = _tdm_sprd_display_create_layer_list_LCD(output_data);
+	if (ret != TDM_ERROR_NONE) {
+		TDM_ERR("_tdm_sprd_display_create_layer_list_LCD failed (%d)", ret);
+		if (output_data->fb_fd > 0)
+			close(output_data->fb_fd);
+		free(output_data->output_modes);
+		free(output_data);
+		return NULL;
+	}
 
 	return output_data;
-failed_create:
-
-	if (output_data->output_modes)
-		free(output_data->output_modes);
-
-	return NULL;
 }
 
 

@@ -630,7 +630,8 @@ _tdm_sprd_display_create_layer_list_LCD(tdm_sprd_output_data *output_data)
 	layer_data_osd->output_data = output_data;
 
 	layer_data_osd->capabilities = TDM_LAYER_CAPABILITY_PRIMARY |
-	                           TDM_LAYER_CAPABILITY_GRAPHIC | TDM_LAYER_CAPABILITY_SCANOUT;
+	                           TDM_LAYER_CAPABILITY_GRAPHIC | TDM_LAYER_CAPABILITY_SCANOUT |
+	                           TDM_LAYER_CAPABILITY_RESEVED_MEMORY;
 	layer_data_osd->zpos = 1;
 
 	layer_data_osd->format_count = sizeof(osd_layer_formats) / sizeof(int);
@@ -640,7 +641,6 @@ _tdm_sprd_display_create_layer_list_LCD(tdm_sprd_output_data *output_data)
 	        layer_data_osd->capabilities);
 
 	LIST_ADDTAIL(&layer_data_osd->link, &output_data->layer_list);
-
 
 	/* create IMG layer */
 	layer_data_img->sprd_data = sprd_data;

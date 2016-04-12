@@ -301,13 +301,19 @@ _tdm_sprd_pp_worker (tdm_sprd_pp_data *pp_data)
 				}
 				return TDM_ERROR_NONE;
 			}
-				if (pp_data->current_task_p->done_func)
-					pp_data->current_task_p->done_func(pp_data,
-													   pp_data->current_task_p->buffers[0].src,
-													   pp_data->current_task_p->buffers[pp_data->current_task_p->max_step-1].dst,
-													   pp_data->current_task_p->done_user_data);
-				_tdm_sprd_pp_destroy_task(pp_data, pp_data->current_task_p);
-				pp_data->current_task_p = NULL;
+
+			tdm_pp_done_handler done_func = pp_data->current_task_p->done_func;
+			tbm_surface_h send_src = pp_data->current_task_p->buffers[0].src;
+			tbm_surface_h send_dst = pp_data->current_task_p->buffers[pp_data->current_task_p->max_step-1].dst;
+			void * user_data = pp_data->current_task_p->done_user_data;
+			_tdm_sprd_pp_destroy_task(pp_data, pp_data->current_task_p);
+			pp_data->current_task_p = NULL;
+			if (done_func) {
+					TDM_DBG(" Return src %p dst %p", send_src, send_dst);
+					done_func(pp_data, send_src, send_dst, user_data);
+				}
+			else
+				TDM_WRN("No done func");
 		}
 		else {
 			TDM_DBG("PP Busy");
@@ -376,7 +382,9 @@ tdm_sprd_pp_handler(struct drm_sprd_ipp_event *hw_ipp_p)
 						 IPP_PAUSE) != TDM_ERROR_NONE) {
 		return;
 	}
-	_tdm_sprd_pp_worker(pp_data);
+	if (_tdm_sprd_pp_worker(pp_data) != TDM_ERROR_NONE) {
+		TDM_ERR("PP worker return ERROR");
+	}
 }
 
 tdm_error
@@ -612,11 +620,11 @@ sprd_pp_attach(tdm_pp *pp, tbm_surface_h src, tbm_surface_h dst)
 		TDM_ERR("alloc failed");
 		return TDM_ERROR_NONE;
 	}
-
-	LIST_ADDTAIL(&buffer->link, &pp_data->pending_buffer_list);
 	buffer->index = 0;
 	buffer->src = src;
 	buffer->dst = dst;
+	TDM_DBG("Attach src %p dst %p buffers", buffer->src, buffer->dst);
+	LIST_ADDTAIL(&buffer->link, &pp_data->pending_buffer_list);
 
 	return TDM_ERROR_NONE;
 }

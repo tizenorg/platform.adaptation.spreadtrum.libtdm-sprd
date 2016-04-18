@@ -282,7 +282,7 @@ _tdm_sprd_pp_destroy_task (tdm_sprd_pp_data *pp_data, tdm_sprd_pp_task * task)
 static tdm_error
 _tdm_sprd_pp_worker (tdm_sprd_pp_data *pp_data)
 {
-	tdm_sprd_pp_task *b = NULL, *bb = NULL;
+	tdm_sprd_pp_task *next_task = NULL;
 	if (pp_data->current_task_p) {
 		if (pp_data->current_task_p->status == TASK_DONE) {
 			++(pp_data->current_task_p->current_step);
@@ -312,21 +312,24 @@ _tdm_sprd_pp_worker (tdm_sprd_pp_data *pp_data)
 					TDM_DBG(" Return src %p dst %p", send_src, send_dst);
 					done_func(pp_data, send_src, send_dst, user_data);
 				}
-			else
+			else {
 				TDM_WRN("No done func");
+			}
 		}
 		else {
 			TDM_DBG("PP Busy");
 			return TDM_ERROR_NONE;
 		}
 	}
-	LIST_FOR_EACH_ENTRY_SAFE(b, bb, &pp_data->pending_tasks_list, link) {
-		pp_data->current_task_p = b;
-		LIST_DEL(&b->link);
+	if (!LIST_IS_EMPTY(&pp_data->pending_tasks_list)) {
+		pp_data->current_task_p = (tdm_sprd_pp_task * )container_of(pp_data->pending_tasks_list.next, next_task, link);
+		LIST_DEL(&pp_data->current_task_p->link);
+	}
+	if (pp_data->current_task_p) {
 		if (_tdm_sprd_pp_queue(pp_data, pp_data->current_task_p->prop_id[pp_data->current_task_p->current_step],
-			pp_data->current_task_p->buffers[pp_data->current_task_p->current_step].src,
-			pp_data->current_task_p->buffers[pp_data->current_task_p->current_step].dst,
-			IPP_BUF_ENQUEUE) != TDM_ERROR_NONE) {
+							   pp_data->current_task_p->buffers[pp_data->current_task_p->current_step].src,
+							   pp_data->current_task_p->buffers[pp_data->current_task_p->current_step].dst,
+							   IPP_BUF_ENQUEUE) != TDM_ERROR_NONE) {
 			return TDM_ERROR_OPERATION_FAILED;
 		}
 		if (_tdm_sprd_pp_cmd(pp_data,
@@ -335,9 +338,10 @@ _tdm_sprd_pp_worker (tdm_sprd_pp_data *pp_data)
 			return TDM_ERROR_OPERATION_FAILED;
 		}
 		pp_data->current_task_p->status = TASK_CONVERTING;
-		return TDM_ERROR_NONE;
 	}
-	TDM_DBG("Nothing to do");
+	else {
+		TDM_DBG("Nothing to do");
+	}
 	return TDM_ERROR_NONE;
 }
 

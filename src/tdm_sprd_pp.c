@@ -3,6 +3,7 @@
 #endif
 #define PP_MAX_STEP 2
 #include "tdm_sprd.h"
+#include "pthread.h"
 typedef struct _tdm_sprd_pp_buffer {
 	int index;
 	tbm_surface_h src;
@@ -77,8 +78,9 @@ static tbm_format *pp_formats = NULL;
 #define NUM_PP_FORMAT 0
 #endif
 
-static int pp_list_init;
+static int pp_list_init = 0;
 static struct list_head pp_list;
+pthread_mutex_t mutex_lock;
 
 static tdm_sprd_prop_id *
 _find_prop_id (tdm_sprd_pp_data *pp_data, unsigned int prop_id)
@@ -91,7 +93,17 @@ _find_prop_id (tdm_sprd_pp_data *pp_data, unsigned int prop_id)
 	return NULL;
 }
 
+
 #if 1
+
+int _tdm_sprd_lock_cd (pthread_mutex_t * mutex_var)
+{
+	struct timespec vtime;
+	clock_gettime(CLOCK_REALTIME, &vtime);
+	vtime.tv_sec += 2;
+	return pthread_mutex_timedlock(mutex_var, &vtime);
+}
+
 static unsigned int
 _tdm_sprd_pp_set(tdm_sprd_pp_data *pp_data, tdm_info_pp *info,
 				 unsigned int prop_id)
@@ -345,23 +357,34 @@ _tdm_sprd_pp_worker (tdm_sprd_pp_data *pp_data)
 	return TDM_ERROR_NONE;
 }
 
+int _tdm_sprd_pp_check_pp (tdm_sprd_pp_data *pp_data)
+{
+	tdm_sprd_pp_data * pp_next = NULL;
+	LIST_FOR_EACH_ENTRY(pp_next, &pp_list, link) {
+		if (pp_next == pp_data) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
 void
 tdm_sprd_pp_handler(struct drm_sprd_ipp_event *hw_ipp_p)
 {
 	RETURN_VOID_IF_FAIL(hw_ipp_p);
-	tdm_sprd_pp_data *found = NULL,
-					  *pp_data = (tdm_sprd_pp_data *)(unsigned long) hw_ipp_p->user_data;
+	tdm_sprd_pp_data *pp_data = (tdm_sprd_pp_data *)(unsigned long) hw_ipp_p->user_data;
 	if (!pp_data || !hw_ipp_p->buf_id) {
 		TDM_ERR("invalid params");
 		return;
 	}
-
-	LIST_FOR_EACH_ENTRY(found, &pp_list, link) {
-		if (found == pp_data)
-			break;
+	RETURN_VOID_IF_FAIL(pp_list_init == 1);
+	if (_tdm_sprd_lock_cd(&mutex_lock)) {
+		TDM_ERR("Mutex lock timeout");
+		return;
 	}
-	if (!found)	{
+	if (!_tdm_sprd_pp_check_pp(pp_data)) {
 		TDM_ERR("Wrong pp event");
+		pthread_mutex_unlock(&mutex_lock);
 		return;
 	}
 	TDM_DBG("HW pp_data(%p) index(%d, %d) prop_id(%u)", pp_data, hw_ipp_p->buf_id[0],
@@ -372,23 +395,27 @@ tdm_sprd_pp_handler(struct drm_sprd_ipp_event *hw_ipp_p)
 	}
 	if (pp_data->current_task_p == NULL) {
 		TDM_ERR("pp(%p) received wrong event", pp_data);
+		pthread_mutex_unlock(&mutex_lock);
 		return;
 	}
 	if (pp_data->current_task_p->prop_id[pp_data->current_task_p->current_step] != hw_ipp_p->prop_id) {
 		TDM_ERR("pp(%p) received wrong event. prop_id expected %u prop_id received %u", pp_data,
 				pp_data->current_task_p->prop_id[pp_data->current_task_p->current_step],
 				hw_ipp_p->prop_id);
+		pthread_mutex_unlock(&mutex_lock);
 		return;
 	}
 	pp_data->current_task_p->status = TASK_DONE;
 	if (_tdm_sprd_pp_cmd(pp_data,
 						 pp_data->current_task_p->prop_id[pp_data->current_task_p->current_step],
 						 IPP_PAUSE) != TDM_ERROR_NONE) {
+		pthread_mutex_unlock(&mutex_lock);
 		return;
 	}
 	if (_tdm_sprd_pp_worker(pp_data) != TDM_ERROR_NONE) {
 		TDM_ERR("PP worker return ERROR");
 	}
+	pthread_mutex_unlock(&mutex_lock);
 }
 
 tdm_error
@@ -428,25 +455,35 @@ tdm_sprd_pp_get_capability(tdm_sprd_data *sprd_data, tdm_caps_pp *caps)
 tdm_pp *
 tdm_sprd_pp_create(tdm_sprd_data *sprd_data, tdm_error *error)
 {
+	if (!pp_list_init) {
+		if (pthread_mutex_init(&mutex_lock, NULL)) {
+			TDM_ERR("mutex init failed: %m");
+			if (error)
+				*error = TDM_ERROR_OPERATION_FAILED;
+			return NULL;
+		}
+		LIST_INITHEAD(&pp_list);
+		pp_list_init = 1;
+	}
+	if (_tdm_sprd_lock_cd(&mutex_lock)) {
+		TDM_ERR("Mutex lock timeout");
+		return NULL;
+	}
 	tdm_sprd_pp_data *pp_data = calloc(1, sizeof(tdm_sprd_pp_data));
 	if (!pp_data) {
 		TDM_ERR("alloc failed");
 		if (error)
 			*error = TDM_ERROR_OUT_OF_MEMORY;
+		pthread_mutex_unlock(&mutex_lock);
 		return NULL;
 	}
-
+	LIST_ADDTAIL(&pp_data->link, &pp_list);
 	pp_data->sprd_data = sprd_data;
 
 	LIST_INITHEAD(&pp_data->pending_buffer_list);
 	LIST_INITHEAD(&pp_data->pending_tasks_list);
 	LIST_INITHEAD(&pp_data->prop_id_list);
-	if (!pp_list_init) {
-		pp_list_init = 1;
-		LIST_INITHEAD(&pp_list);
-	}
-	LIST_ADDTAIL(&pp_data->link, &pp_list);
-
+	pthread_mutex_unlock(&mutex_lock);
 	return pp_data;
 }
 
@@ -457,8 +494,17 @@ sprd_pp_destroy(tdm_pp *pp)
 	tdm_sprd_pp_buffer *b = NULL, *bb = NULL;
 	tdm_sprd_pp_task *task = NULL, *next_task = NULL;
 	tdm_sprd_prop_id *prop_id = NULL, *next_prop_id = NULL;
-	if (!pp_data)
+	RETURN_VOID_IF_FAIL(pp_data);
+	RETURN_VOID_IF_FAIL(pp_list_init == 1);
+	if (_tdm_sprd_lock_cd(&mutex_lock)) {
+		TDM_ERR("Mutex lock timeout");
 		return;
+	}
+	if (!_tdm_sprd_pp_check_pp(pp_data)) {
+		TDM_ERR("Wrong pp_data");
+		pthread_mutex_unlock(&mutex_lock);
+		return;
+	}
 	TDM_DBG("Destroy pp");
 	LIST_FOR_EACH_ENTRY_SAFE(b, bb, &pp_data->pending_buffer_list, link) {
 		LIST_DEL(&b->link);
@@ -469,6 +515,7 @@ sprd_pp_destroy(tdm_pp *pp)
 						   pp_data->current_task_p->buffers[pp_data->current_task_p->current_step].src,
 						   pp_data->current_task_p->buffers[pp_data->current_task_p->current_step].dst, IPP_BUF_DEQUEUE);
 		_tdm_sprd_pp_destroy_task(pp_data, pp_data->current_task_p);
+		pp_data->current_task_p = NULL;
 	}
 	LIST_FOR_EACH_ENTRY_SAFE(task, next_task, &pp_data->pending_tasks_list, link) {
 		LIST_DEL(&task->link);
@@ -479,6 +526,7 @@ sprd_pp_destroy(tdm_pp *pp)
 	}
 	LIST_DEL(&pp_data->link);
 	free(pp_data);
+	pthread_mutex_unlock(&mutex_lock);
 }
 
 static tdm_error
@@ -593,19 +641,30 @@ tdm_error
 sprd_pp_set_info(tdm_pp *pp, tdm_info_pp *info)
 {
 	tdm_sprd_pp_data *pp_data = pp;
-
+	RETURN_VAL_IF_FAIL(pp_list_init == 1, TDM_ERROR_BAD_MODULE);
 	RETURN_VAL_IF_FAIL(pp_data, TDM_ERROR_INVALID_PARAMETER);
 	RETURN_VAL_IF_FAIL(info, TDM_ERROR_INVALID_PARAMETER);
-
+	if (_tdm_sprd_lock_cd(&mutex_lock)) {
+		TDM_ERR("Mutex lock timeout");
+		return TDM_ERROR_BUSY;
+	}
+	if (!_tdm_sprd_pp_check_pp(pp_data)) {
+		TDM_ERR("Wrong pp_data");
+		pthread_mutex_unlock(&mutex_lock);
+		return TDM_ERROR_BAD_MODULE;
+	}
 	if (info->sync) {
 		TDM_ERR("not support sync mode currently");
+		pthread_mutex_unlock(&mutex_lock);
 		return TDM_ERROR_INVALID_PARAMETER;
 	}
 	if (_sprd_pp_make_roadmap(pp_data, info) != TDM_ERROR_NONE) {
 		TDM_ERR("Wrong convertation settings");
+		pthread_mutex_unlock(&mutex_lock);
 		return TDM_ERROR_INVALID_PARAMETER;
 	}
 	pp_data->roadmap_changed = 1;
+	pthread_mutex_unlock(&mutex_lock);
 	return TDM_ERROR_NONE;
 }
 
@@ -614,14 +673,23 @@ sprd_pp_attach(tdm_pp *pp, tbm_surface_h src, tbm_surface_h dst)
 {
 	tdm_sprd_pp_data *pp_data = pp;
 	tdm_sprd_pp_buffer *buffer;
-
+	RETURN_VAL_IF_FAIL(pp_list_init == 1, TDM_ERROR_BAD_MODULE);
 	RETURN_VAL_IF_FAIL(pp_data, TDM_ERROR_INVALID_PARAMETER);
 	RETURN_VAL_IF_FAIL(src, TDM_ERROR_INVALID_PARAMETER);
 	RETURN_VAL_IF_FAIL(dst, TDM_ERROR_INVALID_PARAMETER);
-
+	if (_tdm_sprd_lock_cd(&mutex_lock)) {
+		TDM_ERR("Mutex lock timeout");
+		return TDM_ERROR_BUSY;
+	}
+	if (!_tdm_sprd_pp_check_pp(pp_data)) {
+		TDM_ERR("Wrong pp_data");
+		pthread_mutex_unlock(&mutex_lock);
+		return TDM_ERROR_BAD_MODULE;
+	}
 	buffer = calloc(1, sizeof(tdm_sprd_pp_buffer));
 	if (!buffer) {
 		TDM_ERR("alloc failed");
+		pthread_mutex_unlock(&mutex_lock);
 		return TDM_ERROR_NONE;
 	}
 	buffer->index = 0;
@@ -629,7 +697,7 @@ sprd_pp_attach(tdm_pp *pp, tbm_surface_h src, tbm_surface_h dst)
 	buffer->dst = dst;
 	TDM_DBG("Attach src %p dst %p buffers", buffer->src, buffer->dst);
 	LIST_ADDTAIL(&buffer->link, &pp_data->pending_buffer_list);
-
+	pthread_mutex_unlock(&mutex_lock);
 	return TDM_ERROR_NONE;
 }
 
@@ -641,7 +709,7 @@ _tdm_sprd_pp_make_new_tasks(tdm_sprd_pp_data *pp_data)
 	int i;
 	LIST_FOR_EACH_ENTRY_SAFE(b, bb, &pp_data->pending_buffer_list, link) {
 		main_buffer = b;
-		if ((new_task = malloc(sizeof(tdm_sprd_pp_task))) == NULL) {
+		if ((new_task = calloc(1, sizeof(tdm_sprd_pp_task))) == NULL) {
 			TDM_ERR("Out of memory");
 			return -1;
 		}
@@ -693,7 +761,17 @@ tdm_error
 sprd_pp_commit(tdm_pp *pp)
 {
 	tdm_sprd_pp_data *pp_data = pp;
+	RETURN_VAL_IF_FAIL(pp_list_init == 1, TDM_ERROR_BAD_MODULE);
 	RETURN_VAL_IF_FAIL(pp_data, TDM_ERROR_INVALID_PARAMETER);
+	if (_tdm_sprd_lock_cd(&mutex_lock)) {
+		TDM_ERR("Mutex lock timeout");
+		return TDM_ERROR_BUSY;
+	}
+	if (!_tdm_sprd_pp_check_pp(pp_data)) {
+		TDM_ERR("Wrong pp_data");
+		pthread_mutex_unlock(&mutex_lock);
+		return TDM_ERROR_BAD_MODULE;
+	}
 	if (pp_data->roadmap_changed) {
 		int i;
 		if (pp_data->current_task_p) {
@@ -704,6 +782,7 @@ sprd_pp_commit(tdm_pp *pp)
 			pp_data->roadmap.prop_id[i] = _tdm_sprd_pp_set(pp_data, &pp_data->roadmap.step_info[i], pp_data->roadmap.prop_id[i]);
 			if (pp_data->roadmap.prop_id[i] <= 0) {
 				TDM_ERR("Can't setup pp");
+				pthread_mutex_unlock(&mutex_lock);
 				return TDM_ERROR_BAD_REQUEST;
 			}
 		}
@@ -711,13 +790,21 @@ sprd_pp_commit(tdm_pp *pp)
 	}
 	if (_tdm_sprd_pp_make_new_tasks(pp_data) < 0) {
 		TDM_ERR("Can't create new task");
+		pthread_mutex_unlock(&mutex_lock);
 		return TDM_ERROR_BAD_REQUEST;
 	}
 	if (pp_data->current_task_p != NULL) {
 		TDM_DBG("PP Still Converting. Add task to pending list");
+		pthread_mutex_unlock(&mutex_lock);
 		return TDM_ERROR_NONE;
 	}
-	return _tdm_sprd_pp_worker(pp_data);
+	if (_tdm_sprd_pp_worker(pp_data) != TDM_ERROR_NONE) {
+		TDM_ERR("PP worker return ERROR");
+		pthread_mutex_unlock(&mutex_lock);
+		return TDM_ERROR_OPERATION_FAILED;
+	}
+	pthread_mutex_unlock(&mutex_lock);
+	return TDM_ERROR_NONE;
 }
 
 tdm_error
@@ -725,11 +812,20 @@ sprd_pp_set_done_handler(tdm_pp *pp, tdm_pp_done_handler func, void *user_data)
 {
 	tdm_sprd_pp_data *pp_data = pp;
 	TDM_DBG("Set done handler pp %p func %p", pp, func);
+	RETURN_VAL_IF_FAIL(pp_list_init == 1, TDM_ERROR_BAD_MODULE);
 	RETURN_VAL_IF_FAIL(pp_data, TDM_ERROR_INVALID_PARAMETER);
 	RETURN_VAL_IF_FAIL(func, TDM_ERROR_INVALID_PARAMETER);
-
+	if (_tdm_sprd_lock_cd(&mutex_lock)) {
+		TDM_ERR("Mutex lock timeout");
+		return TDM_ERROR_BUSY;
+	}
+	if (!_tdm_sprd_pp_check_pp(pp_data)) {
+		TDM_ERR("Wrong pp_data");
+		pthread_mutex_unlock(&mutex_lock);
+		return TDM_ERROR_BAD_MODULE;
+	}
 	pp_data->done_func = func;
 	pp_data->done_user_data = user_data;
-
+	pthread_mutex_unlock(&mutex_lock);
 	return TDM_ERROR_NONE;
 }

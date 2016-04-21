@@ -3,6 +3,9 @@
 #endif
 #define PP_MAX_STEP 2
 #include "tdm_sprd.h"
+
+#define SPRD_C(b,m)              (((b) >> (m)) & 0xFF)
+#define SPRD_FOURCC_STR(id)      SPRD_C(id,0), SPRD_C(id,8), SPRD_C(id,16), SPRD_C(id,24)
 typedef struct _tdm_sprd_pp_buffer {
 	int index;
 	tbm_surface_h src;
@@ -29,6 +32,7 @@ typedef struct _tdm_sprd_prop_id {
 } tdm_sprd_prop_id;
 
 typedef struct _tdm_sprd_pp_task {
+	int stamp;
 	unsigned int prop_id[PP_MAX_STEP];
 	tdm_sprd_pp_buffer buffers[PP_MAX_STEP];
 	unsigned int max_step;
@@ -39,20 +43,24 @@ typedef struct _tdm_sprd_pp_task {
 	struct list_head link;
 } tdm_sprd_pp_task;
 
+typedef struct _tdm_sprd_pp_roadmap {
+	unsigned int prop_id[PP_MAX_STEP];
+	tdm_info_pp step_info[PP_MAX_STEP];
+	unsigned int max_step;
+} tdm_sprd_pp_roadmap;
 typedef struct _tdm_sprd_pp_data {
 	tdm_sprd_data *sprd_data;
+	int stamp;
 	struct list_head pending_buffer_list;
 	struct list_head pending_tasks_list;
 	struct list_head prop_id_list;
-	struct {
-		unsigned int prop_id[PP_MAX_STEP];
-		tdm_info_pp step_info[PP_MAX_STEP];
-		unsigned int max_step;
-	} roadmap;
+	tdm_sprd_pp_roadmap roadmap;
+	tdm_sprd_pp_roadmap new_roadmap;
 	tdm_sprd_pp_task *current_task_p;
 	tdm_pp_done_handler done_func;
 	void *done_user_data;
 	int roadmap_changed;
+	int new_buffers;
 	int first_event;
 	struct list_head link;
 } tdm_sprd_pp_data;
@@ -77,7 +85,9 @@ static tbm_format *pp_formats = NULL;
 #define NUM_PP_FORMAT 0
 #endif
 
-static int pp_list_init;
+static int pp_list_init = 0;
+static int pp_stamp = 1001;
+static int task_stamp = 10001;
 static struct list_head pp_list;
 
 static tdm_sprd_prop_id *
@@ -89,6 +99,57 @@ _find_prop_id (tdm_sprd_pp_data *pp_data, unsigned int prop_id)
 			return prop;
 	}
 	return NULL;
+}
+
+int _tdm_sprd_pp_check_struct (tdm_sprd_pp_data *pp_data)
+{
+	RETURN_VAL_IF_FAIL(pp_list_init == 1, 0);
+	if (pp_data == NULL) {
+		TDM_ERR("pp nil(0). Received NULL pointer");
+		return 0;
+	}
+	tdm_sprd_pp_data * pp_next = NULL;
+	LIST_FOR_EACH_ENTRY(pp_next, &pp_list, link) {
+		if (pp_next->stamp == pp_data->stamp) {
+			return 1;
+		}
+	}
+	TDM_ERR("pp %p(%d). Wrong ", pp_data, pp_data->stamp);
+	return 0;
+}
+
+void _tdm_sprd_pp_roadmap_print(tdm_sprd_pp_roadmap *roadmap)
+{
+	RETURN_VOID_IF_FAIL(roadmap);
+	int i;
+	TDM_DBG("Count of steps %d", roadmap->max_step);
+	for (i = 0; i < roadmap->max_step; i++) {
+		TDM_DBG("Step %d, Prop_id %d", i+1, roadmap->prop_id[i])
+		TDM_DBG("format %c%c%c%c(%u) -> %c%c%c%c(%u)", roadmap->step_info[i].src_config.format,
+				SPRD_FOURCC_STR(roadmap->step_info[i].src_config.format), roadmap->step_info[i].dst_config.format,
+				SPRD_FOURCC_STR(roadmap->step_info[i].dst_config.format));
+		TDM_DBG("rotate+flip %u+%s", roadmap->step_info[i].transform % 4,
+				roadmap->step_info[i].transform > 3?"Horizontal":"None");
+		TDM_DBG("size src->dst wxh (%u)x(%u) -> (%u)x(%u)", roadmap->step_info[i].src_config.size.h,
+				roadmap->step_info[i].src_config.size.v, roadmap->step_info[i].dst_config.size.h,
+				roadmap->step_info[i].dst_config.size.v);
+		TDM_DBG("crop src->dst xy+w+h (%u)x(%u)+(%u)+(%u) -> (%u)x(%u)+(%u)+(%u)", roadmap->step_info[i].src_config.pos.x,
+				roadmap->step_info[i].src_config.pos.y, roadmap->step_info[i].src_config.pos.w,
+				roadmap->step_info[i].src_config.pos.h, roadmap->step_info[i].dst_config.pos.x,
+				roadmap->step_info[i].dst_config.pos.y, roadmap->step_info[i].dst_config.pos.w,
+				roadmap->step_info[i].dst_config.pos.h);
+	}
+	TDM_DBG("-------------------------------------------------------------------");
+}
+
+int _tdm_sprd_pp_roadmap_copy(tdm_sprd_pp_roadmap *to_roadmap, tdm_sprd_pp_roadmap *from_roadmap)
+{
+	int i = 0;
+	for (i = 0; i < PP_MAX_STEP; i++) {
+		memcpy(&to_roadmap->step_info[i], &from_roadmap->step_info[i], sizeof(tdm_info_pp));
+	}
+	to_roadmap->max_step = from_roadmap->max_step;
+	return 1;
 }
 
 #if 1
@@ -115,13 +176,15 @@ _tdm_sprd_pp_set(tdm_sprd_pp_data *pp_data, tdm_info_pp *info,
 	property.prop_id = prop_id;
 	property.type = IPP_EVENT_DRIVEN;
 
-	TDM_DBG("src : flip(%x) deg(%d) fmt(%c%c%c%c) sz(%dx%d) pos(%d,%d %dx%d)  ",
+	TDM_DBG("pp %p(%d). src : flip(%x) deg(%d) fmt(%c%c%c%c) sz(%dx%d) pos(%d,%d %dx%d)  ",
+			pp_data, pp_data->stamp,
 			property.config[0].flip, property.config[0].degree,
 			FOURCC_STR(property.config[0].fmt),
 			property.config[0].sz.hsize, property.config[0].sz.vsize,
 			property.config[0].pos.x, property.config[0].pos.y, property.config[0].pos.w,
 			property.config[0].pos.h);
-	TDM_DBG("dst : flip(%x) deg(%d) fmt(%c%c%c%c) sz(%dx%d) pos(%d,%d %dx%d)  ",
+	TDM_DBG("pp %p(%d). dst : flip(%x) deg(%d) fmt(%c%c%c%c) sz(%dx%d) pos(%d,%d %dx%d)  ",
+			pp_data, pp_data->stamp,
 			property.config[1].flip, property.config[1].degree,
 			FOURCC_STR(property.config[1].fmt),
 			property.config[1].sz.hsize, property.config[1].sz.vsize,
@@ -130,11 +193,11 @@ _tdm_sprd_pp_set(tdm_sprd_pp_data *pp_data, tdm_info_pp *info,
 
 	ret = ioctl(sprd_data->drm_fd, DRM_IOCTL_SPRD_IPP_SET_PROPERTY, &property);
 	if (ret) {
-		TDM_ERR("failed: %m");
+		TDM_ERR("pp %p(%d). failed: %m", pp_data, pp_data->stamp);
 		return 0;
 	}
 
-	TDM_DBG("success. prop_id(%u) ", property.prop_id);
+	TDM_DBG("pp %p(%d). success. prop_id(%u) ", pp_data, pp_data->stamp, property.prop_id);
 	return property.prop_id;
 }
 #endif
@@ -159,13 +222,15 @@ _tdm_sprd_pp_queue(tdm_sprd_pp_data *pp_data, unsigned int prop_id,
 		buf.handle[i] = (__u32)tbm_bo_get_handle(bo, TBM_DEVICE_DEFAULT).u32;
 	}
 
-	TDM_DBG("prop_id(%d) ops_id(%d) ctrl(%d) id(%d) handles(%x %x %x). ",
+	TDM_DBG("pp %p(%d). prop_id(%d) ops_id(%d) ctrl(%d) id(%d) handles(%x %x %x). ",
+			pp_data, pp_data->stamp,
 			buf.prop_id, buf.ops_id, buf.buf_type, buf.buf_id,
 			buf.handle[0], buf.handle[1], buf.handle[2]);
 
 	ret = ioctl(sprd_data->drm_fd, DRM_IOCTL_SPRD_IPP_QUEUE_BUF, &buf);
 	if (ret) {
-		TDM_ERR("src failed. prop_id(%d) op(%d) buf(%d) id(%d). %m",
+		TDM_ERR("pp %p(%d). src failed. prop_id(%d) op(%d) buf(%d) id(%d). %m",
+				pp_data, pp_data->stamp,
 				buf.prop_id, buf.ops_id, buf.buf_type, buf.buf_id);
 		return TDM_ERROR_OPERATION_FAILED;
 	}
@@ -182,19 +247,20 @@ _tdm_sprd_pp_queue(tdm_sprd_pp_data *pp_data, unsigned int prop_id,
 		buf.handle[i] = (__u32)tbm_bo_get_handle(bo, TBM_DEVICE_DEFAULT).u32;
 	}
 
-	TDM_DBG("prop_id(%d) ops_id(%d) ctrl(%d) id(%d) handles(%x %x %x). ",
+	TDM_DBG("pp %p(%d). prop_id(%d) ops_id(%d) ctrl(%d) id(%d) handles(%x %x %x). ",
+			pp_data, pp_data->stamp,
 			buf.prop_id, buf.ops_id, buf.buf_type, buf.buf_id,
 			buf.handle[0], buf.handle[1], buf.handle[2]);
 
 	ret = ioctl(sprd_data->drm_fd, DRM_IOCTL_SPRD_IPP_QUEUE_BUF, &buf);
 	if (ret) {
-		TDM_ERR("dst failed. prop_id(%d) op(%d) buf(%d) id(%d). %m",
+		TDM_ERR("pp %p(%d). dst failed. prop_id(%d) op(%d) buf(%d) id(%d). %m",
+				pp_data, pp_data->stamp,
 				buf.prop_id, buf.ops_id, buf.buf_type, buf.buf_id);
 		return TDM_ERROR_OPERATION_FAILED;
 	}
 
-	TDM_DBG("success. prop_id(%d)", buf.prop_id);
-
+	TDM_DBG("pp %p(%d). Success. prop_id(%d)", pp_data, pp_data->stamp, buf.prop_id);
 	return TDM_ERROR_NONE;
 }
 #endif
@@ -209,7 +275,7 @@ _tdm_sprd_pp_cmd(tdm_sprd_pp_data *pp_data, unsigned int prop_id,
 	tdm_sprd_prop_id * found_prop = _find_prop_id(pp_data, prop_id);
 	if (found_prop == NULL) {
 		if ((found_prop = calloc(1, sizeof (tdm_sprd_prop_id))) == NULL) {
-			TDM_ERR("Out of memory");
+			TDM_ERR("pp %p(%d). Out of memory", pp_data, pp_data->stamp);
 			return TDM_ERROR_OUT_OF_MEMORY;
 		}
 		found_prop->prop_id = prop_id;
@@ -250,17 +316,17 @@ _tdm_sprd_pp_cmd(tdm_sprd_pp_data *pp_data, unsigned int prop_id,
 			break;
 	}
 
-	TDM_DBG("prop_id(%d) ctrl(%d). ", ctrl.prop_id, ctrl.ctrl);
+	TDM_DBG("pp %p(%d). prop_id(%d) ctrl(%d). ", pp_data, pp_data->stamp, ctrl.prop_id, ctrl.ctrl);
 
 	ret = ioctl(sprd_data->drm_fd, DRM_IOCTL_SPRD_IPP_CMD_CTRL, &ctrl);
 	if (ret) {
-		TDM_ERR("failed. prop_id(%d) ctrl(%d). %m", ctrl.prop_id, ctrl.ctrl);
+		TDM_ERR("pp %p(%d). Failed. prop_id(%d) ctrl(%d). %m", pp_data, pp_data->stamp, ctrl.prop_id, ctrl.ctrl);
 		return TDM_ERROR_OPERATION_FAILED;
 	}
 	if (found_prop) {
 		found_prop->status = ctrl.ctrl;
 	}
-	TDM_DBG("success. prop_id(%d) ", ctrl.prop_id);
+	TDM_DBG("pp %p(%d). Success. prop_id(%d) ", pp_data, pp_data->stamp, ctrl.prop_id);
 	return TDM_ERROR_NONE;
 }
 #endif
@@ -275,72 +341,77 @@ _tdm_sprd_pp_destroy_task (tdm_sprd_pp_data *pp_data, tdm_sprd_pp_task * task)
 		if (task->buffers[i].dst)
 			tbm_surface_internal_unref(task->buffers[i].dst);
 	}
-	TDM_DBG("Task %p destroy", task);
+	TDM_DBG("pp %p(%d). Task %p(%d) released", pp_data, pp_data->stamp, task, task->stamp);
 	free(task);
 }
 
 static tdm_error
 _tdm_sprd_pp_worker (tdm_sprd_pp_data *pp_data)
 {
-	tdm_sprd_pp_task *next_task = NULL;
-	if (pp_data->current_task_p) {
-		if (pp_data->current_task_p->status == TASK_DONE) {
-			++(pp_data->current_task_p->current_step);
-			if (pp_data->current_task_p->current_step < pp_data->current_task_p->max_step) {
-				if (_tdm_sprd_pp_queue(pp_data, pp_data->current_task_p->prop_id[pp_data->current_task_p->current_step],
-						pp_data->current_task_p->buffers[pp_data->current_task_p->current_step].src,
-						pp_data->current_task_p->buffers[pp_data->current_task_p->current_step].dst,
+	tdm_sprd_pp_task *next_task = NULL, *done_task = pp_data->current_task_p;
+	if (done_task) {
+		if (done_task->status == TASK_DONE) {
+			++(done_task->current_step);
+			if (done_task->current_step < done_task->max_step) {
+				TDM_DBG("pp %p(%d). Task %p(%d) setup next step %d of %d",
+						pp_data, pp_data->stamp, done_task, done_task->stamp,
+						done_task->current_step+1, done_task->max_step);
+				if (_tdm_sprd_pp_queue(pp_data, done_task->prop_id[done_task->current_step],
+						done_task->buffers[done_task->current_step].src,
+						done_task->buffers[done_task->current_step].dst,
 						IPP_BUF_ENQUEUE) != TDM_ERROR_NONE) {
 					return TDM_ERROR_OPERATION_FAILED;
 				}
-				pp_data->current_task_p->status = TASK_CONVERTING;
+				done_task->status = TASK_CONVERTING;
 				if (_tdm_sprd_pp_cmd(pp_data,
-									 pp_data->current_task_p->prop_id[pp_data->current_task_p->current_step],
+									 done_task->prop_id[done_task->current_step],
 									 IPP_RUN) != TDM_ERROR_NONE) {
 					return TDM_ERROR_OPERATION_FAILED;
 				}
 				return TDM_ERROR_NONE;
 			}
-
-			tdm_pp_done_handler done_func = pp_data->current_task_p->done_func;
-			tbm_surface_h send_src = pp_data->current_task_p->buffers[0].src;
-			tbm_surface_h send_dst = pp_data->current_task_p->buffers[pp_data->current_task_p->max_step-1].dst;
-			void * user_data = pp_data->current_task_p->done_user_data;
-			_tdm_sprd_pp_destroy_task(pp_data, pp_data->current_task_p);
 			pp_data->current_task_p = NULL;
-			if (done_func) {
-					TDM_DBG(" Return src %p dst %p", send_src, send_dst);
-					done_func(pp_data, send_src, send_dst, user_data);
+			if (done_task->done_func) {
+					TDM_DBG("pp %p(%d). Return src %p dst %p", pp_data, pp_data->stamp,
+							done_task->buffers[0].src, done_task->buffers[done_task->max_step-1].dst);
+					done_task->done_func(pp_data, done_task->buffers[0].src,
+										 done_task->buffers[done_task->max_step-1].dst,
+										 done_task->done_user_data);
 				}
 			else {
-				TDM_WRN("No done func");
+				TDM_WRN("pp %p(%d). No done func", pp_data, pp_data->stamp);
 			}
+			_tdm_sprd_pp_destroy_task(pp_data, done_task);
 		}
 		else {
-			TDM_DBG("PP Busy");
+			TDM_WRN("pp %p(%d). Busy", pp_data, pp_data->stamp);
 			return TDM_ERROR_NONE;
 		}
 	}
 	if (!LIST_IS_EMPTY(&pp_data->pending_tasks_list)) {
-		pp_data->current_task_p = (tdm_sprd_pp_task * )container_of(pp_data->pending_tasks_list.next, next_task, link);
-		LIST_DEL(&pp_data->current_task_p->link);
+		next_task = (tdm_sprd_pp_task * )container_of(pp_data->pending_tasks_list.next, next_task, link);
+		LIST_DEL(&next_task->link);
 	}
-	if (pp_data->current_task_p) {
-		if (_tdm_sprd_pp_queue(pp_data, pp_data->current_task_p->prop_id[pp_data->current_task_p->current_step],
-							   pp_data->current_task_p->buffers[pp_data->current_task_p->current_step].src,
-							   pp_data->current_task_p->buffers[pp_data->current_task_p->current_step].dst,
+	if (next_task) {
+		TDM_DBG("pp %p(%d). Task %p(%d) setup next step %d of %d",
+				pp_data, pp_data->stamp, next_task, next_task->stamp,
+				next_task->current_step+1, next_task->max_step);
+		if (_tdm_sprd_pp_queue(pp_data, next_task->prop_id[next_task->current_step],
+							   next_task->buffers[next_task->current_step].src,
+							   next_task->buffers[next_task->current_step].dst,
 							   IPP_BUF_ENQUEUE) != TDM_ERROR_NONE) {
 			return TDM_ERROR_OPERATION_FAILED;
 		}
 		if (_tdm_sprd_pp_cmd(pp_data,
-							 pp_data->current_task_p->prop_id[pp_data->current_task_p->current_step],
+							 next_task->prop_id[next_task->current_step],
 							 IPP_RUN) != TDM_ERROR_NONE) {
 			return TDM_ERROR_OPERATION_FAILED;
 		}
-		pp_data->current_task_p->status = TASK_CONVERTING;
+		next_task->status = TASK_CONVERTING;
+		pp_data->current_task_p = next_task;
 	}
 	else {
-		TDM_DBG("Nothing to do");
+		TDM_DBG("pp %p(%d). Nothing to do", pp_data, pp_data->stamp);
 	}
 	return TDM_ERROR_NONE;
 }
@@ -349,45 +420,42 @@ void
 tdm_sprd_pp_handler(struct drm_sprd_ipp_event *hw_ipp_p)
 {
 	RETURN_VOID_IF_FAIL(hw_ipp_p);
-	tdm_sprd_pp_data *found = NULL,
-					  *pp_data = (tdm_sprd_pp_data *)(unsigned long) hw_ipp_p->user_data;
+	tdm_sprd_pp_data *pp_data = (tdm_sprd_pp_data *)(unsigned long) hw_ipp_p->user_data;
+	tdm_sprd_pp_task *done_task = NULL;
 	if (!pp_data || !hw_ipp_p->buf_id) {
 		TDM_ERR("invalid params");
 		return;
 	}
-
-	LIST_FOR_EACH_ENTRY(found, &pp_list, link) {
-		if (found == pp_data)
-			break;
-	}
-	if (!found)	{
-		TDM_ERR("Wrong pp event");
-		return;
-	}
-	TDM_DBG("HW pp_data(%p) index(%d, %d) prop_id(%u)", pp_data, hw_ipp_p->buf_id[0],
+	RETURN_VOID_IF_FAIL(_tdm_sprd_pp_check_struct(pp_data));
+	TDM_DBG("pp %p(%d) index(%d, %d) prop_id(%u)", pp_data, pp_data->stamp, hw_ipp_p->buf_id[0],
 			hw_ipp_p->buf_id[1], hw_ipp_p->prop_id);
 	if (!pp_data->first_event) {
-		TDM_DBG("pp(%p) got a first event. ", pp_data);
+		TDM_DBG("pp %p(%d) got a first event. ", pp_data, pp_data->stamp);
 		pp_data->first_event = 1;
 	}
-	if (pp_data->current_task_p == NULL) {
-		TDM_ERR("pp(%p) received wrong event", pp_data);
+	if ((done_task = pp_data->current_task_p) == NULL) {
+		TDM_ERR("pp %p(%d) received wrong event", pp_data, pp_data->stamp);
 		return;
 	}
-	if (pp_data->current_task_p->prop_id[pp_data->current_task_p->current_step] != hw_ipp_p->prop_id) {
-		TDM_ERR("pp(%p) received wrong event. prop_id expected %u prop_id received %u", pp_data,
-				pp_data->current_task_p->prop_id[pp_data->current_task_p->current_step],
+	if (done_task->prop_id[done_task->current_step] != hw_ipp_p->prop_id) {
+		TDM_ERR("pp %p(%d) received wrong event. prop_id expected %u prop_id received %u", pp_data, pp_data->stamp,
+				done_task->prop_id[done_task->current_step],
 				hw_ipp_p->prop_id);
 		return;
 	}
-	pp_data->current_task_p->status = TASK_DONE;
+	done_task->status = TASK_DONE;
+	TDM_DBG("pp %p(%d). Task %p(%d) done step %d of %d", pp_data, pp_data->stamp, done_task, done_task->stamp,
+			done_task->current_step+1, done_task->max_step);
 	if (_tdm_sprd_pp_cmd(pp_data,
-						 pp_data->current_task_p->prop_id[pp_data->current_task_p->current_step],
+						 done_task->prop_id[done_task->current_step],
 						 IPP_PAUSE) != TDM_ERROR_NONE) {
+		TDM_ERR("pp %p(%d). Can't PAUSE conveter. Prop_id %d", pp_data,
+				pp_data->stamp, done_task->prop_id[done_task->current_step]);
 		return;
 	}
 	if (_tdm_sprd_pp_worker(pp_data) != TDM_ERROR_NONE) {
-		TDM_ERR("PP worker return ERROR");
+		TDM_ERR("pp %p(%d) worker return ERROR", pp_data,
+				pp_data->stamp);
 	}
 }
 
@@ -437,29 +505,28 @@ tdm_sprd_pp_create(tdm_sprd_data *sprd_data, tdm_error *error)
 	}
 
 	pp_data->sprd_data = sprd_data;
-
-	LIST_INITHEAD(&pp_data->pending_buffer_list);
-	LIST_INITHEAD(&pp_data->pending_tasks_list);
-	LIST_INITHEAD(&pp_data->prop_id_list);
+	pp_data->stamp = pp_stamp++;
 	if (!pp_list_init) {
 		pp_list_init = 1;
 		LIST_INITHEAD(&pp_list);
 	}
+	LIST_INITHEAD(&pp_data->pending_buffer_list);
+	LIST_INITHEAD(&pp_data->pending_tasks_list);
+	LIST_INITHEAD(&pp_data->prop_id_list);
 	LIST_ADDTAIL(&pp_data->link, &pp_list);
-
+	TDM_DBG("pp %p(%d). Create", pp_data, pp_data->stamp);
 	return pp_data;
 }
 
 void
 sprd_pp_destroy(tdm_pp *pp)
 {
-	tdm_sprd_pp_data *pp_data = pp;
+	tdm_sprd_pp_data *pp_data = (tdm_sprd_pp_data *) pp;
 	tdm_sprd_pp_buffer *b = NULL, *bb = NULL;
 	tdm_sprd_pp_task *task = NULL, *next_task = NULL;
 	tdm_sprd_prop_id *prop_id = NULL, *next_prop_id = NULL;
-	if (!pp_data)
-		return;
-	TDM_DBG("Destroy pp");
+	RETURN_VOID_IF_FAIL(_tdm_sprd_pp_check_struct(pp_data));
+	TDM_DBG("pp %p(%d). Destroy", pp_data, pp_data->stamp);
 	LIST_FOR_EACH_ENTRY_SAFE(b, bb, &pp_data->pending_buffer_list, link) {
 		LIST_DEL(&b->link);
 		free(b);
@@ -487,7 +554,7 @@ _sprd_pp_get_scale_leap(unsigned int src, unsigned int dst,
 {
 	unsigned int i = 0;
 	unsigned int ratio, next_value = src;
-	TDM_DBG(" PP scale src %u", src);
+	TDM_DBG("pp. scale src %u", src);
 	for (i = 0; i < PP_MAX_STEP; i++) {
 		ratio = PP_RATIO(next_value, dst);
 		if ((ratio >= PP_UP_MAX_RATIO) && (ratio <= PP_DOWN_MIN_RATIO))
@@ -547,7 +614,7 @@ _sprd_pp_make_roadmap(tdm_sprd_pp_data *pp_data, tdm_info_pp *info)
 		(src_height > height_leap[height_leap_size -1] &&
 		 src_width < width_leap[width_leap_size - 1])) {
 		if (max_size > 1 || max_size == PP_MAX_STEP) {
-			TDM_ERR ("Unsupported scale");
+			TDM_ERR ("pp %p(%d). Unsupported scale", pp_data, pp_data->stamp);
 			return TDM_ERROR_OPERATION_FAILED;
 		}
 		height_leap[1] = height_leap[0];
@@ -559,32 +626,32 @@ _sprd_pp_make_roadmap(tdm_sprd_pp_data *pp_data, tdm_info_pp *info)
 		width_leap_size = 2;
 */
 	}
-	memcpy(&pp_data->roadmap.step_info[0], info, sizeof(tdm_info_pp));
-	pp_data->roadmap.step_info[0].dst_config.pos.h = height_leap[0];
-	pp_data->roadmap.step_info[0].dst_config.pos.w = width_leap[0];
+	memcpy(&pp_data->new_roadmap.step_info[0], info, sizeof(tdm_info_pp));
+	pp_data->new_roadmap.step_info[0].dst_config.pos.h = height_leap[0];
+	pp_data->new_roadmap.step_info[0].dst_config.pos.w = width_leap[0];
 	max_size = (width_leap_size > height_leap_size ? width_leap_size :
 				height_leap_size);
 	for (i = 1; i < max_size; i++) {
-		pp_data->roadmap.step_info[i - 1].dst_config.pos.w =
+		pp_data->new_roadmap.step_info[i - 1].dst_config.pos.w =
 								width_leap[(((i - 1) < width_leap_size) ? (i - 1) : (width_leap_size - 1))];
-		pp_data->roadmap.step_info[i - 1].dst_config.pos.h =
+		pp_data->new_roadmap.step_info[i - 1].dst_config.pos.h =
 								height_leap[(((i - 1) < height_leap_size) ? (i - 1) : (height_leap_size - 1))];
-		pp_data->roadmap.step_info[i - 1].dst_config.size.h = pp_data->roadmap.step_info[i - 1].dst_config.pos.w;
-		pp_data->roadmap.step_info[i - 1].dst_config.size.v = pp_data->roadmap.step_info[i - 1].dst_config.pos.h;
-		pp_data->roadmap.step_info[i].transform = TDM_TRANSFORM_NORMAL;
-		pp_data->roadmap.step_info[i].src_config.format = pp_data->roadmap.step_info[i - 1].dst_config.format;
-		pp_data->roadmap.step_info[i].dst_config.format = pp_data->roadmap.step_info[i - 1].dst_config.format;
-		pp_data->roadmap.step_info[i].src_config = pp_data->roadmap.step_info[i - 1].dst_config;
-		pp_data->roadmap.step_info[i].dst_config = pp_data->roadmap.step_info[i - 1].dst_config;
-		pp_data->roadmap.step_info[i].src_config.pos.x = 0;
-		pp_data->roadmap.step_info[i].src_config.pos.y = 0;
-		pp_data->roadmap.step_info[i].dst_config.pos.x = 0;
-		pp_data->roadmap.step_info[i].dst_config.pos.y = 0;
-		pp_data->roadmap.step_info[i].sync = pp_data->roadmap.step_info[i - 1].sync;
-		pp_data->roadmap.step_info[i].flags = pp_data->roadmap.step_info[i - 1].flags;
+		pp_data->new_roadmap.step_info[i - 1].dst_config.size.h = pp_data->new_roadmap.step_info[i - 1].dst_config.pos.w;
+		pp_data->new_roadmap.step_info[i - 1].dst_config.size.v = pp_data->new_roadmap.step_info[i - 1].dst_config.pos.h;
+		pp_data->new_roadmap.step_info[i].transform = TDM_TRANSFORM_NORMAL;
+		pp_data->new_roadmap.step_info[i].src_config.format = pp_data->new_roadmap.step_info[i - 1].dst_config.format;
+		pp_data->new_roadmap.step_info[i].dst_config.format = pp_data->new_roadmap.step_info[i - 1].dst_config.format;
+		pp_data->new_roadmap.step_info[i].src_config = pp_data->new_roadmap.step_info[i - 1].dst_config;
+		pp_data->new_roadmap.step_info[i].dst_config = pp_data->new_roadmap.step_info[i - 1].dst_config;
+		pp_data->new_roadmap.step_info[i].src_config.pos.x = 0;
+		pp_data->new_roadmap.step_info[i].src_config.pos.y = 0;
+		pp_data->new_roadmap.step_info[i].dst_config.pos.x = 0;
+		pp_data->new_roadmap.step_info[i].dst_config.pos.y = 0;
+		pp_data->new_roadmap.step_info[i].sync = pp_data->new_roadmap.step_info[i - 1].sync;
+		pp_data->new_roadmap.step_info[i].flags = pp_data->new_roadmap.step_info[i - 1].flags;
 	}
-	memcpy(&pp_data->roadmap.step_info[max_size - 1].dst_config, &info->dst_config, sizeof(tdm_info_config));
-	pp_data->roadmap.max_step = max_size;
+	memcpy(&pp_data->new_roadmap.step_info[max_size - 1].dst_config, &info->dst_config, sizeof(tdm_info_config));
+	pp_data->new_roadmap.max_step = max_size;
 	//_sprd_pp_make_roadmap_transform (pp_data, info);
 	return TDM_ERROR_NONE;
 }
@@ -592,17 +659,16 @@ _sprd_pp_make_roadmap(tdm_sprd_pp_data *pp_data, tdm_info_pp *info)
 tdm_error
 sprd_pp_set_info(tdm_pp *pp, tdm_info_pp *info)
 {
-	tdm_sprd_pp_data *pp_data = pp;
-
-	RETURN_VAL_IF_FAIL(pp_data, TDM_ERROR_INVALID_PARAMETER);
+	tdm_sprd_pp_data *pp_data = (tdm_sprd_pp_data *) pp;
 	RETURN_VAL_IF_FAIL(info, TDM_ERROR_INVALID_PARAMETER);
-
+	RETURN_VAL_IF_FAIL(_tdm_sprd_pp_check_struct(pp_data), TDM_ERROR_INVALID_PARAMETER);
+	TDM_DBG("pp %p(%d). Set new info.", pp_data, pp_data->stamp);
 	if (info->sync) {
-		TDM_ERR("not support sync mode currently");
+		TDM_ERR("pp %p(%d). not support sync mode currently", pp_data, pp_data->stamp);
 		return TDM_ERROR_INVALID_PARAMETER;
 	}
 	if (_sprd_pp_make_roadmap(pp_data, info) != TDM_ERROR_NONE) {
-		TDM_ERR("Wrong convertation settings");
+		TDM_ERR("pp %p(%d). Wrong convertation settings", pp_data, pp_data->stamp);
 		return TDM_ERROR_INVALID_PARAMETER;
 	}
 	pp_data->roadmap_changed = 1;
@@ -612,22 +678,21 @@ sprd_pp_set_info(tdm_pp *pp, tdm_info_pp *info)
 tdm_error
 sprd_pp_attach(tdm_pp *pp, tbm_surface_h src, tbm_surface_h dst)
 {
-	tdm_sprd_pp_data *pp_data = pp;
+	tdm_sprd_pp_data *pp_data = (tdm_sprd_pp_data *) pp;
 	tdm_sprd_pp_buffer *buffer;
-
-	RETURN_VAL_IF_FAIL(pp_data, TDM_ERROR_INVALID_PARAMETER);
 	RETURN_VAL_IF_FAIL(src, TDM_ERROR_INVALID_PARAMETER);
 	RETURN_VAL_IF_FAIL(dst, TDM_ERROR_INVALID_PARAMETER);
-
+	RETURN_VAL_IF_FAIL(_tdm_sprd_pp_check_struct(pp_data), TDM_ERROR_INVALID_PARAMETER);
 	buffer = calloc(1, sizeof(tdm_sprd_pp_buffer));
 	if (!buffer) {
-		TDM_ERR("alloc failed");
+		TDM_ERR("pp %p(%d). Alloc failed", pp_data, pp_data->stamp);
 		return TDM_ERROR_NONE;
 	}
 	buffer->index = 0;
 	buffer->src = src;
 	buffer->dst = dst;
-	TDM_DBG("Attach src %p dst %p buffers", buffer->src, buffer->dst);
+	pp_data->new_buffers = 1;
+	TDM_DBG("pp %p(%d). Attach src %p dst %p buffers", pp_data, pp_data->stamp, buffer->src, buffer->dst);
 	LIST_ADDTAIL(&buffer->link, &pp_data->pending_buffer_list);
 
 	return TDM_ERROR_NONE;
@@ -641,13 +706,13 @@ _tdm_sprd_pp_make_new_tasks(tdm_sprd_pp_data *pp_data)
 	int i;
 	LIST_FOR_EACH_ENTRY_SAFE(b, bb, &pp_data->pending_buffer_list, link) {
 		main_buffer = b;
-		if ((new_task = malloc(sizeof(tdm_sprd_pp_task))) == NULL) {
+		if ((new_task = calloc(1, sizeof(tdm_sprd_pp_task))) == NULL) {
 			TDM_ERR("Out of memory");
 			return -1;
 		}
 		LIST_DEL(&b->link);
-		TDM_DBG("Add new src %p dst %p buffer to pp task", main_buffer->src, main_buffer->dst);
 		memcpy(new_task->prop_id, pp_data->roadmap.prop_id, sizeof(unsigned int)*PP_MAX_STEP);
+		new_task->stamp = task_stamp++;
 		new_task->max_step = pp_data->roadmap.max_step;
 		new_task->current_step = 0;
 		new_task->done_func = pp_data->done_func;
@@ -681,9 +746,11 @@ _tdm_sprd_pp_make_new_tasks(tdm_sprd_pp_data *pp_data)
 			new_task->buffers[i].src = new_task->buffers[i-1].dst;
 			}
 		LIST_ADDTAIL(&new_task->link, &pp_data->pending_tasks_list);
+		TDM_DBG("pp %p(%d). Add new src %p dst %p buffer", pp_data, pp_data->stamp, main_buffer->src, main_buffer->dst);
+		TDM_DBG("To New task %p(%d)", new_task, new_task->stamp);
 	}
 	if (main_buffer == NULL) {
-		TDM_WRN("pp buffer list is empty. Nothing to do");
+		TDM_WRN("pp %p(%d) buffer list is empty. Nothing to do", pp_data, pp_data->stamp);
 		return 0;
 	}
 	return 1;
@@ -692,44 +759,44 @@ _tdm_sprd_pp_make_new_tasks(tdm_sprd_pp_data *pp_data)
 tdm_error
 sprd_pp_commit(tdm_pp *pp)
 {
-	tdm_sprd_pp_data *pp_data = pp;
-	RETURN_VAL_IF_FAIL(pp_data, TDM_ERROR_INVALID_PARAMETER);
+	tdm_sprd_pp_data *pp_data = (tdm_sprd_pp_data *) pp;
+	RETURN_VAL_IF_FAIL(_tdm_sprd_pp_check_struct(pp_data), TDM_ERROR_INVALID_PARAMETER);
 	if (pp_data->roadmap_changed) {
-		int i;
-		if (pp_data->current_task_p) {
-			TDM_WRN ("PP RUN");
-			_tdm_sprd_pp_cmd(pp_data, pp_data->current_task_p->prop_id[pp_data->current_task_p->current_step], IPP_PAUSE);
+		unsigned int i;
+		for (i = 0; i < pp_data->roadmap.max_step; i++) {
+			if (pp_data->roadmap.prop_id[i] > 0)
+				_tdm_sprd_pp_cmd(pp_data, pp_data->roadmap.prop_id[i], IPP_PAUSE);
 		}
+		_tdm_sprd_pp_roadmap_copy(&pp_data->roadmap, &pp_data->new_roadmap);
 		for (i = 0; i < pp_data->roadmap.max_step; i++) {
 			pp_data->roadmap.prop_id[i] = _tdm_sprd_pp_set(pp_data, &pp_data->roadmap.step_info[i], pp_data->roadmap.prop_id[i]);
 			if (pp_data->roadmap.prop_id[i] <= 0) {
-				TDM_ERR("Can't setup pp");
+				TDM_ERR("pp %p(%d). Can't setup converter", pp_data, pp_data->stamp);
 				return TDM_ERROR_BAD_REQUEST;
 			}
 		}
 		pp_data->roadmap_changed = 0;
+		_tdm_sprd_pp_roadmap_print(&pp_data->roadmap);
 	}
-	if (_tdm_sprd_pp_make_new_tasks(pp_data) < 0) {
-		TDM_ERR("Can't create new task");
-		return TDM_ERROR_BAD_REQUEST;
+	if (pp_data->new_buffers == 1) {
+		if (_tdm_sprd_pp_make_new_tasks(pp_data) < 0) {
+			TDM_ERR("pp %p(%d). Can't create new task", pp_data, pp_data->stamp);
+			return TDM_ERROR_BAD_REQUEST;
+		}
+		pp_data->new_buffers = 0;
+		return _tdm_sprd_pp_worker(pp_data);
 	}
-	if (pp_data->current_task_p != NULL) {
-		TDM_DBG("PP Still Converting. Add task to pending list");
-		return TDM_ERROR_NONE;
-	}
-	return _tdm_sprd_pp_worker(pp_data);
+	return TDM_ERROR_NONE;
 }
 
 tdm_error
 sprd_pp_set_done_handler(tdm_pp *pp, tdm_pp_done_handler func, void *user_data)
 {
-	tdm_sprd_pp_data *pp_data = pp;
-	TDM_DBG("Set done handler pp %p func %p", pp, func);
-	RETURN_VAL_IF_FAIL(pp_data, TDM_ERROR_INVALID_PARAMETER);
+	tdm_sprd_pp_data *pp_data = (tdm_sprd_pp_data *) pp;
 	RETURN_VAL_IF_FAIL(func, TDM_ERROR_INVALID_PARAMETER);
-
+	RETURN_VAL_IF_FAIL(_tdm_sprd_pp_check_struct(pp_data), TDM_ERROR_INVALID_PARAMETER);
+	TDM_DBG("pp %p(%d). Set done handler func %p", pp_data, pp_data->stamp, func);
 	pp_data->done_func = func;
 	pp_data->done_user_data = user_data;
-
 	return TDM_ERROR_NONE;
 }

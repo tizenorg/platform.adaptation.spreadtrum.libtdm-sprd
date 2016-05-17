@@ -1233,7 +1233,7 @@ sprd_layer_get_capability(tdm_layer *layer, tdm_caps_layer *caps)
 	memset(caps, 0, sizeof(tdm_caps_layer));
 
 	caps->capabilities = layer_data->capabilities;
-	caps->zpos = -1;  /* if VIDEO layer, zpos is -1 */
+	caps->zpos = layer_data->zpos;
 
 	caps->format_count = layer_data->format_count;
 	caps->formats = calloc(1, sizeof(tbm_format) * caps->format_count);

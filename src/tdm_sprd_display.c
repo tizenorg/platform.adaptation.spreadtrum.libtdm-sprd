@@ -1430,8 +1430,9 @@ _sprd_drm_vblank_event (int fd, unsigned int sequence, unsigned int tv_sec,
 
 		break;
 	default:
-		return;
+		break;
 	}
+	free(vblank_data);
 }
 
 static void

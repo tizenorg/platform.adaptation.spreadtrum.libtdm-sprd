@@ -704,6 +704,10 @@ _tdm_sprd_pp_make_new_tasks(tdm_sprd_pp_data *pp_data)
 	tdm_sprd_pp_buffer *main_buffer = NULL, *b = NULL, *bb = NULL;
 	tdm_sprd_pp_task *new_task = NULL;
 	int i;
+	if (LIST_IS_EMPTY(&pp_data->pending_buffer_list)) {
+		TDM_WRN("pp %p(%d) buffer list is empty. Nothing to do", pp_data, pp_data->stamp);
+		return 0;
+	}
 	LIST_FOR_EACH_ENTRY_SAFE(b, bb, &pp_data->pending_buffer_list, link) {
 		main_buffer = b;
 		if ((new_task = calloc(1, sizeof(tdm_sprd_pp_task))) == NULL) {
@@ -748,10 +752,8 @@ _tdm_sprd_pp_make_new_tasks(tdm_sprd_pp_data *pp_data)
 		LIST_ADDTAIL(&new_task->link, &pp_data->pending_tasks_list);
 		TDM_DBG("pp %p(%d). Add new src %p dst %p buffer", pp_data, pp_data->stamp, main_buffer->src, main_buffer->dst);
 		TDM_DBG("To New task %p(%d)", new_task, new_task->stamp);
-	}
-	if (main_buffer == NULL) {
-		TDM_WRN("pp %p(%d) buffer list is empty. Nothing to do", pp_data, pp_data->stamp);
-		return 0;
+		free(main_buffer);
+		main_buffer = NULL;
 	}
 	return 1;
 }

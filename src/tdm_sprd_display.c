@@ -1071,7 +1071,7 @@ sprd_output_wait_vblank(tdm_output *output, int interval, int sync,
 	if (ret != TDM_ERROR_NONE)
 		goto failed_vblank;
 
-	target_msc++;
+	target_msc += interval;
 
 	vblank_data->type = VBLANK_TYPE_WAIT;
 	vblank_data->output_data = output_data;

@@ -124,7 +124,7 @@ void _tdm_sprd_pp_roadmap_print(tdm_sprd_pp_roadmap *roadmap)
 	int i;
 	TDM_DBG("Count of steps %d", roadmap->max_step);
 	for (i = 0; i < roadmap->max_step; i++) {
-		TDM_DBG("Step %d, Prop_id %d", i+1, roadmap->prop_id[i])
+		TDM_DBG("Step %d, Prop_id %d", i+1, roadmap->prop_id[i]);
 		TDM_DBG("format %c%c%c%c(%u) -> %c%c%c%c(%u)", roadmap->step_info[i].src_config.format,
 				SPRD_FOURCC_STR(roadmap->step_info[i].src_config.format), roadmap->step_info[i].dst_config.format,
 				SPRD_FOURCC_STR(roadmap->step_info[i].dst_config.format));

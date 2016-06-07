@@ -780,6 +780,8 @@ _tdm_sprd_display_create_output_LCD(tdm_sprd_data *sprd_data)
 			return NULL;
 		}
 		_tdm_sprd_display_to_tdm_mode (&output_data->mi, &output_data->output_modes[0]);
+
+		output_data->status = TDM_OUTPUT_CONN_STATUS_MODE_SETTED;
 	}
 
 	TDM_DBG("output(%p, status:%d type:%d-%d) pipe(%d) dpms(%d)", output_data,

@@ -261,7 +261,7 @@ static inline void _tdm_sprd_display_to_tdm_mode(struct fb_var_screeninfo
 static int
 _localdrmWaitVBlank(int fd, drmVBlank *vbl)
 {
-	struct timespec timeout, cur;
+	struct timespec timeout = {0,}, cur = {0,};
 	int ret;
 
 	ret = clock_gettime(CLOCK_MONOTONIC, &timeout);
@@ -433,7 +433,7 @@ static tdm_error
 _tdm_sprd_display_do_commit(tdm_sprd_output_data *output_data)
 {
 	tdm_error res = TDM_ERROR_NONE;
-	tdm_sprd_layer_data *layer_data;
+	tdm_sprd_layer_data *layer_data = NULL;
 	overlay_info ovi;
 	overlay_display ov_disp = {0,};
 	int layer_index = 0;

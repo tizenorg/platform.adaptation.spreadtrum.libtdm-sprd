@@ -153,6 +153,66 @@ int _tdm_sprd_pp_roadmap_copy(tdm_sprd_pp_roadmap *to_roadmap, tdm_sprd_pp_roadm
 }
 
 #if 1
+static void
+_tdm_sprd_pp_property_format_check(struct drm_sprd_ipp_property *prop)
+{
+	int src_alpha = 0, dst_alpha = 0;
+	__u32 src_fmt, dst_fmt, change_fmt;
+	__u8 alpha;
+
+	src_fmt = prop->config[0].fmt;
+	dst_fmt = prop->config[1].fmt;
+
+	/* no corresponding format to AYUV */
+	if (src_fmt == TBM_FORMAT_AYUV || dst_fmt == TBM_FORMAT_AYUV)
+		return;
+
+	alpha = src_fmt & 0xff;
+	if (alpha == 'A')
+		src_alpha = 1;
+	alpha = (src_fmt >> 8) & 0xff;
+	if (alpha == 'A')
+		src_alpha = 2;
+
+	alpha = dst_fmt & 0xff;
+	if (alpha == 'A')
+		dst_alpha = 1;
+	alpha = (dst_fmt >> 8) & 0xff;
+	if (alpha == 'A')
+		dst_alpha = 2;
+
+	/* not chane format if both have alpha or not*/
+	if ((src_alpha == 0 && dst_alpha == 0) ||
+		(src_alpha != 0 && dst_alpha != 0))
+		return;
+
+	alpha = 'X';
+	if (src_alpha == 1) {
+		change_fmt = src_fmt;
+		change_fmt = (change_fmt & 0xffffff00) | alpha;
+		prop->config[0].fmt = change_fmt;
+	} else if (src_alpha == 2) {
+		change_fmt = src_fmt;
+		change_fmt = (change_fmt & 0xffff00ff) | alpha << 8;
+		prop->config[0].fmt = change_fmt;
+	} else if (dst_alpha == 1) {
+		change_fmt = dst_fmt;
+		change_fmt = (change_fmt & 0xffffff00) | alpha;
+		prop->config[1].fmt = change_fmt;
+	} else if (dst_alpha == 2) {
+		change_fmt = dst_fmt;
+		change_fmt = (change_fmt & 0xffff00ff) | alpha << 8;
+		prop->config[1].fmt = change_fmt;
+	}
+
+	if (src_alpha != 0)
+		TDM_DBG("src format change fmt(%c%c%c%c) -> fmt(%c%c%c%c)",
+				FOURCC_STR(src_fmt), FOURCC_STR(change_fmt));
+	else
+		TDM_DBG("dst format change fmt(%c%c%c%c) -> fmt(%c%c%c%c)",
+				FOURCC_STR(dst_fmt), FOURCC_STR(change_fmt));
+}
+
 static unsigned int
 _tdm_sprd_pp_set(tdm_sprd_pp_data *pp_data, tdm_info_pp *info,
 				 unsigned int prop_id)
@@ -175,6 +235,8 @@ _tdm_sprd_pp_set(tdm_sprd_pp_data *pp_data, tdm_info_pp *info,
 	property.cmd = IPP_CMD_M2M;
 	property.prop_id = prop_id;
 	property.type = IPP_EVENT_DRIVEN;
+
+	_tdm_sprd_pp_property_format_check(&property);
 
 	TDM_DBG("pp %p(%d). src : flip(%x) deg(%d) fmt(%c%c%c%c) sz(%dx%d) pos(%d,%d %dx%d)  ",
 			pp_data, pp_data->stamp,
@@ -341,8 +403,8 @@ static void
 _tdm_sprd_pp_destroy_task (tdm_sprd_pp_data *pp_data, tdm_sprd_pp_task * task)
 {
 	int i;
-	for (i = 0; i < task->max_step; i++)
-	{
+
+	for (i = 0; i < task->max_step; i++) {
 		if (task->buffers[i].src)
 			tbm_surface_internal_unref(task->buffers[i].src);
 		if (task->buffers[i].dst)
@@ -353,9 +415,9 @@ _tdm_sprd_pp_destroy_task (tdm_sprd_pp_data *pp_data, tdm_sprd_pp_task * task)
 		TDM_DBG("pp %p(%d). Return src %p dst %p", pp_data, pp_data->stamp,
 				task->buffers[0].src, task->buffers[task->max_step-1].dst);
 		task->done_func(pp_data, task->buffers[0].src,
-						 task->buffers[task->max_step-1].dst,
-						 task->done_user_data);
-		}
+						task->buffers[task->max_step-1].dst,
+						task->done_user_data);
+	}
 	TDM_DBG("pp %p(%d). Task %p(%d) released", pp_data, pp_data->stamp, task, task->stamp);
 	free(task);
 }
@@ -690,7 +752,6 @@ _sprd_pp_get_scale_leap(unsigned int src, unsigned int dst,
 static tdm_error
 _sprd_pp_make_roadmap(tdm_sprd_pp_data *pp_data, tdm_info_pp *info)
 {
-
 	unsigned int height_leap[PP_MAX_STEP], width_leap[PP_MAX_STEP],
 			 height_leap_size = 0, width_leap_size = 0, max_size = 0, i,
 			 src_height = (info->transform % 2) ? info->src_config.pos.w : info->src_config.pos.h,
